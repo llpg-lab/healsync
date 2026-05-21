@@ -16,10 +16,16 @@ import os
 from dotenv import load_dotenv
 import logging
 import sys
+import os
 import json
 import asyncio
 from datetime import datetime
 from pathlib import Path
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 from database import (
     calendar_summary,

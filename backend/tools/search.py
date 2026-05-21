@@ -30,7 +30,7 @@ async def duckduckgo_search(query: str, max_results: int = 3) -> List[SearchResu
                 "skip_disambig": 1
             }
             
-            async with session.get(url, params=params, timeout=10) as response:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=3)) as response:
                 if response.status == 200:
                     data = await response.json()
                     

@@ -293,7 +293,9 @@ class DecisionEngine:
             if event_queue:
                 await event_queue.put({"type": event_type, **data})
         
-        async def run_agent_with_notify(agent, round_num, user_input, context, round1_logs=None):
+        async def run_agent_with_notify(agent, round_num, user_input, context, round1_logs=None, delay=0):
+            if delay > 0:
+                await asyncio.sleep(delay)
             if round_num == 1:
                 agent_log = await self.run_agent_round1(agent, user_input, context)
             else:
@@ -317,29 +319,29 @@ class DecisionEngine:
         logger.info("=" * 60)
         
         tasks = [
-            run_agent_with_notify(agent, 1, user_input, context)
-            for agent in self.agents
+            run_agent_with_notify(agent, 1, user_input, context, delay=i * 3)
+            for i, agent in enumerate(self.agents)
         ]
-        
+
         round1_logs = []
         for coro in asyncio.as_completed(tasks):
             agent_log = await coro
             round1_logs.append(agent_log)
             logger.info(f"  ✅ [{agent_log.agent_name}] 第一轮完成")
-        
+
         logger.info("-" * 60)
         logger.info("📊 第一轮发言汇总:")
         for r in round1_logs:
             logger.info(f"  ✅ [{r.agent_name}] {r.stance}")
         logger.info("=" * 60)
-        
+
         logger.info("=" * 60)
         logger.info("🎭 [ROUND 2] 第二轮：并行辩论回应")
         logger.info("=" * 60)
-        
+
         tasks = [
-            run_agent_with_notify(agent, 2, user_input, context, round1_logs)
-            for agent in self.agents
+            run_agent_with_notify(agent, 2, user_input, context, round1_logs, delay=i * 3)
+            for i, agent in enumerate(self.agents)
         ]
         
         round2_logs = []
