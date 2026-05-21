@@ -97,6 +97,7 @@ class SuggestionRequest(BaseModel):
     note: str = ""
     decision: Optional[dict] = None
     score: Optional[int] = None
+    requestPayload: Optional[dict] = None
     createdAt: Optional[str] = None
 
 class AgentOpinion(BaseModel):
@@ -115,6 +116,11 @@ class FinalDecisionOutput(BaseModel):
     dinner_recommendation: str
     action_index: int
     avatar_state: str
+    summary_reason: str = ""
+    recommended_menu: Optional[dict] = None
+    prep_plan: Optional[List[str]] = None
+    nutrition_note: str = ""
+    mindset_note: str = ""
 
 class DecisionResponse(BaseModel):
     round1_debate: List[AgentOpinion]
@@ -296,7 +302,12 @@ async def make_decision(request: DecisionRequest):
                 today_bad=final_decision.today_bad,
                 dinner_recommendation=final_decision.dinner_recommendation,
                 action_index=final_decision.action_index,
-                avatar_state=final_decision.avatar_state
+                avatar_state=final_decision.avatar_state,
+                summary_reason=final_decision.summary_reason,
+                recommended_menu=final_decision.recommended_menu,
+                prep_plan=final_decision.prep_plan,
+                nutrition_note=final_decision.nutrition_note,
+                mindset_note=final_decision.mindset_note,
             ),
             wellness_score=wellness_score
         )
@@ -331,7 +342,12 @@ async def generate_decision_stream(request: DecisionRequest):
                 "dinner_recommendation": final_decision.dinner_recommendation,
                 "action_index": final_decision.action_index,
                 "avatar_state": final_decision.avatar_state,
-                "wellness_score": wellness_score
+                "wellness_score": wellness_score,
+                "summary_reason": final_decision.summary_reason,
+                "recommended_menu": final_decision.recommended_menu,
+                "prep_plan": final_decision.prep_plan,
+                "nutrition_note": final_decision.nutrition_note,
+                "mindset_note": final_decision.mindset_note,
             }
             await event_queue.put(final_data)
             await event_queue.put({"type": "done"})

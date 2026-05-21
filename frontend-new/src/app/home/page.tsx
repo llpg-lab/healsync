@@ -8,14 +8,11 @@ import {
   CheckCircle2,
   ClipboardList,
   Edit3,
-  Home,
   Loader2,
   LogOut,
-  NotebookPen,
   Save,
   Sparkles,
   Upload,
-  Utensils,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -80,6 +77,22 @@ type DecisionResponse = {
     dinner_recommendation: string
     action_index: number
     avatar_state: string
+    summary_reason?: string
+    recommended_menu?: {
+      title: string
+      servings: string
+      estimated_time: string
+      dishes: {
+        name: string
+        reason: string
+        ingredients: string[]
+        steps: string[]
+        time: string
+      }[]
+    } | null
+    prep_plan?: string[] | null
+    nutrition_note?: string
+    mindset_note?: string
   }
   wellness_score: number
 }
@@ -131,6 +144,7 @@ type SuggestionRecord = {
   createdAt?: string
   decision?: DecisionResponse | null
   score?: number | null
+  requestPayload?: CookingRequest | null
 }
 
 type MealRecord = {
@@ -166,20 +180,58 @@ type AgentStreamEvent = {
   avatar_state?: string
   wellness_score?: number
   message?: string
+  summary_reason?: string
+  recommended_menu?: {
+    title: string
+    servings: string
+    estimated_time: string
+    dishes: {
+      name: string
+      reason: string
+      ingredients: string[]
+      steps: string[]
+      time: string
+    }[]
+  } | null
+  prep_plan?: string[] | null
+  nutrition_note?: string
+  mindset_note?: string
 }
 
-const ingredientOptions = ['鸡蛋', '青菜', '米饭', '豆腐', '番茄', '牛奶', '燕麦', '鱼肉']
-const moodOptions = ['平稳', '疲惫', '焦虑', '开心', '压力大', '想吃甜']
-const seededSuggestions: SuggestionRecord[] = [
-  { id: 's1', ingredients: '鸡蛋、青菜、米饭', mood: '平稳', note: '晚餐希望清淡但有饱腹感' },
-  { id: 's2', ingredients: '豆腐、番茄、燕麦', mood: '疲惫', note: '需要恢复精力，避免太油' },
-  { id: 's3', ingredients: '鱼肉、青菜、牛奶', mood: '压力大', note: '想要稳定情绪和睡眠' },
-]
+const ingredientOptions = ['鸡蛋', '青菜', '米饭', '豆腐', '番茄', '牛奶', '燕麦', '鱼肉', '鸡胸肉', '土豆', '面条', '虾', '蘑菇']
+const moodOptions = ['疲惫', '压力大', '想吃热乎的', '想吃清淡', '想吃重口', '没胃口', '想被安慰', '开心']
+const goalOptions = ['一人晚餐', '两人两菜一汤', '三人便当', '快速早餐', '一人午餐', '加班宵夜']
+const timeBudgetOptions = ['10分钟', '20分钟', '30分钟', '45分钟以上']
+const toolOptions = ['炒锅', '电饭煲', '空气炸锅', '微波炉', '蒸锅']
+
+type CookingRequest = {
+  goal: string
+  ingredients: string[]
+  ingredientNote: string
+  moodTags: string[]
+  moodNote: string
+  timeBudget: string
+  craving: string
+  constraints: string
+  tools: string[]
+}
+
+const emptyCookingRequest: CookingRequest = {
+  goal: '',
+  ingredients: [],
+  ingredientNote: '',
+  moodTags: [],
+  moodNote: '',
+  timeBudget: '',
+  craving: '',
+  constraints: '',
+  tools: [],
+}
 const defaultSuggestions: SuggestionRecord[] = []
 const emptySuggestion: SuggestionRecord = {
   id: 'draft',
   ingredients: '',
-  mood: seededSuggestions[0]?.mood || 'å¹³ç¨³',
+  mood: '',
   note: '',
 }
 const defaultMeals: MealRecord[] = [
@@ -191,33 +243,33 @@ const defaultMeals: MealRecord[] = [
 const fallbackDecision: DecisionResponse = {
   round1_debate: [
     {
-      agent_name: '体质 Agent',
+      agent_name: '老中医',
       role: 'constitution',
-      opinion: '当前状态适合选择温和、易消化、有稳定能量释放的食物。',
-      stance: '稳态优先',
+      opinion: '依老夫之见，当前疲惫状态宜食温热之物，推荐番茄豆腐蛋汤，性味平和，补中益气，适合养胃安神。',
+      stance: '中医养生',
       round_num: 1,
     },
     {
-      agent_name: '营养 Agent',
+      agent_name: '营养师',
       role: 'nutrition',
-      opinion: '建议保证蛋白质、蔬菜和主食比例，避免只吃零食或单一碳水。',
+      opinion: '从营养角度，推荐番茄豆腐蛋汤搭配清炒青菜，蛋白质充足，膳食纤维丰富，热量约350千卡。',
       stance: '均衡摄入',
       round_num: 1,
     },
   ],
   round2_debate: [
     {
-      agent_name: '执行 Agent',
+      agent_name: '自律分身',
       role: 'discipline',
-      opinion: '把方案压缩成一顿能马上做的饭，比追求完美菜单更重要。',
+      opinion: '这套菜单简单高效，30分钟内可完成，不需要复杂厨具，符合时间预算。',
       stance: '可执行',
       round_num: 2,
     },
     {
-      agent_name: '情绪 Agent',
+      agent_name: '情绪疗愈师',
       role: 'pleasure',
-      opinion: '保留一点喜欢的口味可以降低补偿性进食的概率。',
-      stance: '不过度克制',
+      opinion: '热乎的番茄豆腐蛋汤能带来情绪上的安慰，加上青菜的清新感，既满足又不放纵。',
+      stance: '情绪关怀',
       round_num: 2,
     },
   ],
@@ -226,9 +278,34 @@ const fallbackDecision: DecisionResponse = {
     mindset_adjustment: '不用把这一餐当成考试，先完成一顿稳定的饭。',
     today_good: '有记录和主动决策，就是很好的自我观察。',
     today_bad: '避免因为情绪波动临时改成高糖高油组合。',
-    dinner_recommendation: '番茄豆腐蛋汤配半碗米饭，或青菜鱼肉饭，适合今天的状态。',
+    dinner_recommendation: '30分钟两菜一汤：番茄豆腐蛋汤、清炒青菜',
     action_index: 7,
     avatar_state: 'stable',
+    summary_reason: '当前疲惫状态需要温热易消化的食物，番茄豆腐蛋汤补蛋白且暖胃，搭配青菜营养均衡。',
+    recommended_menu: {
+      title: '30分钟两菜一汤',
+      servings: '2人',
+      estimated_time: '30分钟',
+      dishes: [
+        {
+          name: '番茄豆腐蛋汤',
+          reason: '热乎、补蛋白、符合疲惫状态',
+          ingredients: ['番茄', '豆腐', '鸡蛋', '葱'],
+          steps: ['番茄切块，豆腐切小块，鸡蛋打散', '锅中少油炒番茄出汁', '加水煮开后放豆腐', '淋入蛋液，调盐，撒葱花'],
+          time: '12分钟',
+        },
+        {
+          name: '清炒青菜',
+          reason: '补充膳食纤维，简单快炒',
+          ingredients: ['青菜', '蒜', '盐'],
+          steps: ['青菜洗净，蒜切末', '热锅少油爆香蒜末', '大火快炒青菜至断生', '调盐出锅'],
+          time: '8分钟',
+        },
+      ],
+    },
+    prep_plan: ['先煮汤底', '汤煮开时处理青菜', '最后快炒青菜'],
+    nutrition_note: '蛋白质和蔬菜足够，主食按饥饿程度补半碗米饭',
+    mindset_note: '疲惫时先吃热乎稳定的一餐，不追求复杂',
   },
   wellness_score: 76,
 }
@@ -243,6 +320,7 @@ export default function HomePage() {
   const [calendarDays, setCalendarDays] = useState<CalendarDaySummary[]>([])
   const [suggestions, setSuggestions] = useState<SuggestionRecord[]>(defaultSuggestions)
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestionRecord>(emptySuggestion)
+  const [draftCookingRequest, setDraftCookingRequest] = useState<CookingRequest>(emptyCookingRequest)
   const [mealRecords, setMealRecords] = useState<MealRecord[]>(defaultMeals)
   const [isDeciding, setIsDeciding] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -387,8 +465,8 @@ export default function HomePage() {
     }
   }
 
-  const runDecisionStream = async (records = suggestions) => {
-    const currentContext = records
+  const runDecisionStream = async (records = suggestions, overrideUserInput?: string, cookingRequest?: CookingRequest) => {
+    const currentContext = overrideUserInput || records
       .map((item, index) => `${index + 1}. 食材：${item.ingredients || '未填写'}；情绪：${item.mood}；备注：${item.note}`)
       .join('\n')
     const requestBody = {
@@ -397,7 +475,17 @@ export default function HomePage() {
       context: {
         profile: userProfile,
         profile_prompt: getUserProfilePrompt(),
-        short_term_state: records,
+        short_term_state: cookingRequest ? {
+          goal: cookingRequest.goal,
+          ingredients: cookingRequest.ingredients,
+          ingredientNote: cookingRequest.ingredientNote,
+          moodTags: cookingRequest.moodTags,
+          moodNote: cookingRequest.moodNote,
+          timeBudget: cookingRequest.timeBudget,
+          craving: cookingRequest.craving,
+          constraints: cookingRequest.constraints,
+          tools: cookingRequest.tools,
+        } : records,
         time: new Date().toLocaleString('zh-CN'),
         diet_score_window: dietScores.slice(0, 7),
       },
@@ -463,6 +551,11 @@ export default function HomePage() {
               dinner_recommendation: event.dinner_recommendation || '',
               action_index: event.action_index || 0,
               avatar_state: event.avatar_state || 'neutral',
+              summary_reason: event.summary_reason,
+              recommended_menu: event.recommended_menu || null,
+              prep_plan: event.prep_plan || null,
+              nutrition_note: event.nutrition_note,
+              mindset_note: event.mindset_note,
             },
             wellness_score: event.wellness_score || 0,
           }
@@ -519,14 +612,26 @@ export default function HomePage() {
   }
 
   const handleGenerateSuggestion = () => {
-    const record = {
+    const cr = draftCookingRequest
+    const ingredientsText = cr.ingredients.join('、')
+    const moodText = cr.moodTags.join('、')
+    const noteText = [cr.ingredientNote, cr.moodNote, cr.craving, cr.constraints].filter(Boolean).join('；')
+
+    const record: SuggestionRecord = {
       ...draftSuggestion,
       id: crypto.randomUUID(),
       createdAt: localTimestampKey(),
+      ingredients: ingredientsText,
+      mood: moodText,
+      note: noteText,
+      requestPayload: { ...cr },
     }
+
     const next = [record, ...suggestions]
     setSuggestions(next)
     setDraftSuggestion(emptySuggestion)
+    setDraftCookingRequest(emptyCookingRequest)
+
     apiFetch<SuggestionRecord>('/diet/suggestions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -539,7 +644,18 @@ export default function HomePage() {
       .catch((error) => {
         setNotice(error instanceof Error ? `饮食建议保存失败：${error.message}` : '饮食建议保存失败')
       })
-    void runDecisionStream(next)
+
+    const user_input = [
+      `做饭目标：${cr.goal}`,
+      `现有食材：${ingredientsText}${cr.ingredientNote ? `（${cr.ingredientNote}）` : ''}`,
+      moodText ? `心情：${moodText}${cr.moodNote ? `（${cr.moodNote}）` : ''}` : '',
+      cr.timeBudget ? `时间预算：${cr.timeBudget}` : '',
+      cr.craving ? `特别想吃：${cr.craving}` : '',
+      cr.constraints ? `限制：${cr.constraints}` : '',
+      cr.tools.length > 0 ? `厨具：${cr.tools.join('、')}` : '',
+    ].filter(Boolean).join('\n')
+
+    void runDecisionStream(next, user_input, cr)
   }
 
   const analyzeDiet = async (files: FileList | File[] | null, imageUrls: string[] = []) => {
@@ -656,6 +772,8 @@ export default function HomePage() {
         <RightWorkbench
           suggestions={suggestions}
           draftSuggestion={draftSuggestion}
+          draftCookingRequest={draftCookingRequest}
+          updateDraftCookingRequest={(patch) => setDraftCookingRequest((current) => ({ ...current, ...patch }))}
           updateDraftSuggestion={(patch) => setDraftSuggestion((current) => ({ ...current, ...patch }))}
           submitSuggestionDecision={handleGenerateSuggestion}
           isDeciding={isDeciding}
@@ -663,6 +781,7 @@ export default function HomePage() {
           analyzeDiet={analyzeDiet}
           isAnalyzing={isAnalyzing}
           onOpenMealRecord={setSelectedMealRecord}
+          onOpenSuggestion={setSelectedSuggestion}
         />
       </div>
 
@@ -881,23 +1000,29 @@ function DecisionResult({ decision, history }: { decision: DecisionResponse | nu
 function RightWorkbench({
   suggestions,
   draftSuggestion,
+  draftCookingRequest,
   updateDraftSuggestion,
+  updateDraftCookingRequest,
   submitSuggestionDecision,
   isDeciding,
   mealRecords,
   analyzeDiet,
   isAnalyzing,
   onOpenMealRecord,
+  onOpenSuggestion,
 }: {
   suggestions: SuggestionRecord[]
   draftSuggestion: SuggestionRecord
+  draftCookingRequest: CookingRequest
   updateDraftSuggestion: (patch: Partial<SuggestionRecord>) => void
+  updateDraftCookingRequest: (patch: Partial<CookingRequest>) => void
   submitSuggestionDecision: () => void
   isDeciding: boolean
   mealRecords: MealRecord[]
   analyzeDiet: (files: FileList | File[] | null, imageUrls?: string[]) => Promise<boolean>
   isAnalyzing: boolean
   onOpenMealRecord: (record: MealRecord) => void
+  onOpenSuggestion: (record: SuggestionRecord) => void
 }) {
   const [activeTab, setActiveTab] = useState<'suggestions' | 'records'>('suggestions')
   const [selectedDietPhotos, setSelectedDietPhotos] = useState<SelectedDietPhoto[]>([])
@@ -963,18 +1088,20 @@ function RightWorkbench({
         <PanelHeader title="饮食建议" icon={Apple} />
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
           {suggestions.length > 0 ? (
-            suggestions.map((record) => <SuggestionRecordCard key={record.id} record={record} />)
+            suggestions.map((record) => (
+              <SuggestionRecordCard key={record.id} record={record} onClick={() => onOpenSuggestion?.(record)} />
+            ))
           ) : (
             <p className="rounded-2xl bg-cream p-4 text-sm text-gray-500">当日饮食建议记录会按生成顺序排列在这里。</p>
           )}
         </div>
         <div className="mt-4 rounded-2xl bg-cream p-4">
-          <SuggestionEditor record={draftSuggestion} onChange={updateDraftSuggestion} />
+          <CookingRequestForm request={draftCookingRequest} onChange={updateDraftCookingRequest} />
         </div>
         <motion.button
           whileTap={{ scale: 0.98 }}
           onClick={submitSuggestionDecision}
-          disabled={isDeciding}
+          disabled={isDeciding || !draftCookingRequest.goal || draftCookingRequest.ingredients.length === 0}
           className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-sm font-semibold text-white disabled:opacity-70"
         >
           {isDeciding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -1218,14 +1345,28 @@ function AgentDebateModal({
           {finalEvent && (
             <article className="rounded-2xl bg-gray-900 p-4 text-white">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="font-bold">最终综合建议</h3>
+                <h3 className="font-bold">{finalEvent.recommended_menu?.title || '最终综合建议'}</h3>
                 <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-gray-900">
                   {finalEvent.wellness_score ?? '--'}
                 </span>
               </div>
-              <p className="text-sm leading-6 text-white/85">{finalEvent.dinner_recommendation}</p>
-              {finalEvent.debate_result && (
-                <p className="mt-3 text-sm leading-6 text-white/70">{finalEvent.debate_result}</p>
+              {finalEvent.summary_reason && (
+                <p className="mb-2 text-sm leading-6 text-white/70">{finalEvent.summary_reason}</p>
+              )}
+              {finalEvent.recommended_menu?.dishes && finalEvent.recommended_menu.dishes.length > 0 ? (
+                <div className="space-y-2">
+                  {finalEvent.recommended_menu.dishes.map((dish, i) => (
+                    <div key={i} className="rounded-xl bg-white/10 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold">{dish.name}</span>
+                        <span className="text-xs text-white/60">{dish.time}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-white/70">{dish.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm leading-6 text-white/85">{finalEvent.dinner_recommendation}</p>
               )}
             </article>
           )}
@@ -1260,77 +1401,172 @@ function PanelHeader({
   )
 }
 
-function SuggestionEditor({
-  record,
+function CookingRequestForm({
+  request,
   onChange,
 }: {
-  record: SuggestionRecord
-  onChange: (patch: Partial<SuggestionRecord>) => void
+  request: CookingRequest
+  onChange: (patch: Partial<CookingRequest>) => void
 }) {
+  const toggleItem = (field: 'ingredients' | 'moodTags' | 'tools', item: string) => {
+    const current = request[field]
+    onChange({
+      [field]: current.includes(item) ? current.filter((v) => v !== item) : [...current, item],
+    })
+  }
+
   return (
-    <article>
-      <label className="block text-xs font-semibold text-gray-500">手边食材</label>
-      <input
-        value={record.ingredients}
-        onChange={(event) => onChange({ ingredients: event.target.value })}
-        className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
-        placeholder="例如：鸡蛋、青菜、米饭"
-      />
-      <div className="mt-3 grid grid-cols-2 gap-2">
+    <article className="space-y-3">
+      <div>
         <label className="block text-xs font-semibold text-gray-500">
-          情绪状态
-          <select
-            value={record.mood}
-            onChange={(event) => onChange({ mood: event.target.value })}
-            className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
-          >
-            {moodOptions.map((option) => (
-              <option key={option}>{option}</option>
-            ))}
-          </select>
+          做饭目标 <span className="text-red-400">*</span>
         </label>
-        <label className="block text-xs font-semibold text-gray-500">
-          快速食材
-          <select
-            value=""
-            onChange={(event) => {
-              if (!event.target.value) return
-              onChange({
-                ingredients: [record.ingredients, event.target.value].filter(Boolean).join('、'),
-              })
-            }}
-            className="mt-1 w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
-          >
-            <option value="">添加</option>
-            {ingredientOptions.map((option) => (
-              <option key={option}>{option}</option>
-            ))}
-          </select>
-        </label>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {goalOptions.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onChange({ goal: request.goal === option ? '' : option })}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                request.goal === option
+                  ? 'bg-gray-900 text-morandi-yellow'
+                  : 'bg-white text-gray-600 hover:bg-white/80'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <input
+          value={request.goal}
+          onChange={(e) => onChange({ goal: e.target.value })}
+          className="mt-2 w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
+          placeholder="或自定义目标，如：两人两菜一汤"
+        />
       </div>
-      <textarea
-        value={record.note}
-        onChange={(event) => onChange({ note: event.target.value })}
-        rows={2}
-        className="mt-3 w-full resize-none rounded-xl bg-white px-3 py-2 text-sm leading-5 outline-none focus:ring-2 focus:ring-morandi-yellow"
-        placeholder="补充短期状态"
+
+      <div>
+        <label className="block text-xs font-semibold text-gray-500">
+          现有食材 <span className="text-red-400">*</span>
+        </label>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {ingredientOptions.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => toggleItem('ingredients', option)}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                request.ingredients.includes(option)
+                  ? 'bg-morandi-yellow/40 text-gray-800'
+                  : 'bg-white text-gray-600 hover:bg-white/80'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <input
+          value={request.ingredientNote}
+          onChange={(e) => onChange({ ingredientNote: e.target.value })}
+          className="mt-2 w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
+          placeholder="补充食材说明，如：还有半盒豆腐、一点葱"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-semibold text-gray-500">心情</label>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {moodOptions.slice(0, 4).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => toggleItem('moodTags', option)}
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+                  request.moodTags.includes(option)
+                    ? 'bg-morandi-pink/30 text-gray-800'
+                    : 'bg-white text-gray-600 hover:bg-white/80'
+                }`}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-gray-500">留给做饭的时间</label>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {timeBudgetOptions.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => onChange({ timeBudget: request.timeBudget === option ? '' : option })}
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+                  request.timeBudget === option
+                    ? 'bg-gray-900 text-morandi-yellow'
+                    : 'bg-white text-gray-600 hover:bg-white/80'
+                }`}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <input
+        value={request.craving}
+        onChange={(e) => onChange({ craving: e.target.value })}
+        className="w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
+        placeholder="特别想吃的，如：番茄味、想吃面"
       />
+      <input
+        value={request.constraints}
+        onChange={(e) => onChange({ constraints: e.target.value })}
+        className="w-full rounded-xl bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-morandi-yellow"
+        placeholder="饮食限制，如：不要辣、少油、不想洗太多锅"
+      />
+
+      <div>
+        <label className="block text-xs font-semibold text-gray-500">厨具条件</label>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {toolOptions.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => toggleItem('tools', option)}
+              className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+                request.tools.includes(option)
+                  ? 'bg-morandi-green/25 text-gray-800'
+                  : 'bg-white text-gray-600 hover:bg-white/80'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
     </article>
   )
 }
 
-function SuggestionRecordCard({ record }: { record: SuggestionRecord }) {
+function SuggestionRecordCard({ record, onClick }: { record: SuggestionRecord; onClick?: () => void }) {
+  const menu = record.decision?.final_decision?.recommended_menu
   return (
-    <article className="rounded-2xl bg-cream p-4">
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-2xl bg-cream p-4 text-left transition hover:bg-morandi-yellow/25"
+    >
       <div className="mb-2 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold">{record.ingredients || '未填写食材'}</h3>
-          <p className="mt-1 text-xs text-gray-500">{record.mood}</p>
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold">{menu?.title || record.requestPayload?.goal || record.ingredients || '未填写食材'}</h3>
+          <p className="mt-1 text-xs text-gray-500">{record.mood}{record.requestPayload?.timeBudget ? ` · ${record.requestPayload.timeBudget}` : ''}</p>
         </div>
         {record.createdAt && <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs text-gray-500">{record.createdAt}</span>}
       </div>
-      <p className="text-sm leading-6 text-gray-600">{record.note || '未补充短期状态'}</p>
-    </article>
+      <p className="text-sm leading-6 text-gray-600">{menu ? menu.dishes.map((d) => d.name).join('、') : record.note || '未补充短期状态'}</p>
+    </button>
   )
 }
 
@@ -1482,32 +1718,106 @@ function CalendarDayDetailModal({
 }
 
 function SuggestionDetailModal({ record, onClose }: { record: SuggestionRecord; onClose: () => void }) {
+  const menu = record.decision?.final_decision?.recommended_menu
+  const dishes = menu?.dishes || []
+
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
-      <section className="max-h-[86vh] w-full max-w-2xl overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
+      <section className="max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
         <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
           <div>
-            <h2 className="text-lg font-bold">饮食建议详情</h2>
-            <p className="mt-1 text-sm text-gray-500">{record.createdAt || '建议记录'}</p>
+            <h2 className="text-lg font-bold">{menu?.title || '饮食建议详情'}</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              {record.createdAt || '建议记录'}
+              {menu?.servings && ` · ${menu.servings}`}
+              {menu?.estimated_time && ` · ${menu.estimated_time}`}
+            </p>
           </div>
           <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-cream">
             <X className="h-5 w-5" />
           </button>
         </div>
         <div className="space-y-3 overflow-y-auto p-5">
-          <article className="rounded-2xl bg-cream p-4">
-            <h3 className="text-sm font-bold">手边食材</h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">{record.ingredients || '未填写'}</p>
-          </article>
-          <article className="rounded-2xl bg-cream p-4">
-            <h3 className="text-sm font-bold">情绪状态</h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">{record.mood || '未填写'}</p>
-          </article>
-          <article className="rounded-2xl bg-cream p-4">
-            <h3 className="text-sm font-bold">补充说明</h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">{record.note || '未补充短期状态'}</p>
-          </article>
-          {record.decision && (
+          {record.decision?.final_decision?.summary_reason && (
+            <article className="rounded-2xl bg-cream p-4">
+              <h3 className="text-sm font-bold">推荐理由</h3>
+              <p className="mt-2 text-sm leading-6 text-gray-600">{record.decision.final_decision.summary_reason}</p>
+            </article>
+          )}
+
+          {dishes.length > 0 ? (
+            <section>
+              <h3 className="mb-3 text-sm font-bold">推荐菜单</h3>
+              <div className="space-y-3">
+                {dishes.map((dish, index) => (
+                  <article key={index} className="rounded-2xl border border-cream bg-white p-4">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <h4 className="font-bold">{dish.name}</h4>
+                      <span className="shrink-0 rounded-full bg-cream px-3 py-1 text-xs font-medium text-gray-600">{dish.time}</span>
+                    </div>
+                    <p className="mb-2 text-sm text-gray-600">{dish.reason}</p>
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {dish.ingredients.map((ing) => (
+                        <span key={ing} className="rounded-full bg-morandi-yellow/25 px-2 py-0.5 text-xs text-gray-700">{ing}</span>
+                      ))}
+                    </div>
+                    <ol className="space-y-1">
+                      {dish.steps.map((step, si) => (
+                        <li key={si} className="text-sm leading-5 text-gray-600">
+                          <span className="mr-1.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[10px] font-bold text-morandi-yellow">{si + 1}</span>
+                          {step}
+                        </li>
+                      ))}
+                    </ol>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <>
+              <article className="rounded-2xl bg-cream p-4">
+                <h3 className="text-sm font-bold">手边食材</h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">{record.ingredients || '未填写'}</p>
+              </article>
+              <article className="rounded-2xl bg-cream p-4">
+                <h3 className="text-sm font-bold">情绪状态</h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">{record.mood || '未填写'}</p>
+              </article>
+              <article className="rounded-2xl bg-cream p-4">
+                <h3 className="text-sm font-bold">补充说明</h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">{record.note || '未补充短期状态'}</p>
+              </article>
+            </>
+          )}
+
+          {record.decision?.final_decision?.prep_plan && record.decision.final_decision.prep_plan.length > 0 && (
+            <article className="rounded-2xl bg-cream p-4">
+              <h3 className="text-sm font-bold">备菜顺序</h3>
+              <ol className="mt-2 space-y-1">
+                {record.decision.final_decision.prep_plan.map((step, index) => (
+                  <li key={index} className="text-sm leading-6 text-gray-600">
+                    <span className="mr-1.5 font-bold text-morandi-purple">{index + 1}.</span> {step}
+                  </li>
+                ))}
+              </ol>
+            </article>
+          )}
+
+          {record.decision?.final_decision?.nutrition_note && (
+            <article className="rounded-2xl bg-cream p-4">
+              <h3 className="text-sm font-bold">营养提示</h3>
+              <p className="mt-2 text-sm leading-6 text-gray-600">{record.decision.final_decision.nutrition_note}</p>
+            </article>
+          )}
+
+          {record.decision?.final_decision?.mindset_note && (
+            <article className="rounded-2xl bg-cream p-4">
+              <h3 className="text-sm font-bold">心态提示</h3>
+              <p className="mt-2 text-sm leading-6 text-gray-600">{record.decision.final_decision.mindset_note}</p>
+            </article>
+          )}
+
+          {record.decision && !menu && (
             <article className="rounded-2xl bg-gray-900 p-4 text-white">
               <h3 className="text-sm font-bold">综合建议</h3>
               <p className="mt-2 text-sm leading-6 text-white/80">

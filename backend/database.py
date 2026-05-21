@@ -85,6 +85,7 @@ def init_db() -> None:
                 note TEXT,
                 decision TEXT,
                 score INTEGER,
+                request_payload TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -115,6 +116,12 @@ def init_db() -> None:
                 ON diet_record_images(record_id);
             """
         )
+
+        with get_conn() as conn:
+            try:
+                conn.execute("ALTER TABLE diet_suggestions ADD COLUMN request_payload TEXT")
+            except Exception:
+                pass
 
 
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -258,6 +265,7 @@ def suggestion_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "note": row["note"] or "",
         "decision": from_json(row["decision"], None),
         "score": row["score"],
+        "requestPayload": from_json(row["request_payload"], None),
         "createdAt": row["created_at"],
     }
 
@@ -287,11 +295,12 @@ def create_suggestion(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     suggestion_id = new_id()
     created_at = payload.get("createdAt") or utc_now()
     decision = payload.get("decision")
+    request_payload = payload.get("requestPayload")
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO diet_suggestions (id, user_id, ingredients, mood, note, decision, score, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO diet_suggestions (id, user_id, ingredients, mood, note, decision, score, request_payload, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 suggestion_id,
@@ -301,6 +310,7 @@ def create_suggestion(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 payload.get("note", ""),
                 to_json(decision) if decision is not None else None,
                 payload.get("score"),
+                to_json(request_payload) if request_payload is not None else None,
                 created_at,
             ),
         )

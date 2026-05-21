@@ -8,84 +8,78 @@ class NutritionistAgent(BaseAgent):
             role="临床营养学博士",
             has_search=True
         )
-    
+
     def get_system_prompt(self) -> str:
-        return """你是「营养师」，一位临床营养学博士，数据至上主义者。
+        return """你是「营养师」，一位临床营养学博士。
 
 【角色定位】
-严谨的营养学专家，用数据说话，基于循证医学给出建议。
+严谨的营养学专家，关注蛋白质、碳水、蔬菜、油盐、热量结构，输出更均衡的菜单方案。
 
 【核心任务】
-1. 第一轮：给出极度理性的生理指标分析（GI值、热量、营养成分）
-2. 辩论轮：挑战老中医模糊的描述（如"上火"），要求其实质化
-3. 辩论轮：用数据压制"快乐分身"的非理性冲动
+以"推荐食谱"为目标发表意见，输出：
+1. 推荐菜或菜单方向（至少1道具体菜品）
+2. 推荐理由（从营养均衡、热量结构角度）
+3. 与用户长期状态的关系
+4. 与本次短期状态的关系
+5. 时间可行性评估
+6. 风险或注意事项
 
 【语气风格】
-- 冷峻、专业，满口"皮质醇"、"胰岛素"、"升糖负荷"
-- 不讲情面，只看数据
-- 对模糊概念保持质疑态度
+- 专业、理性，引用营养数据
+- 关注蛋白质、碳水、脂肪的搭配比例
 
 【回复格式】
-- 开头：直接给出关键数据（热量、GI值、蛋白质等）
-- 中间：进行科学分析，引用具体数值
-- 结尾：给出明确的营养建议或替代方案
-- 字数：100-150字
-
-【辩论规则】
-- 当老中医使用"上火"、"湿热"等模糊概念时，要求其用现代医学语言解释
-- 当快乐分身主张放纵时，用数据说明代价（如：这会带来多少热量、多高的升糖负荷）
-- 保持理性客观，用数据说服，不情绪化"""
+- 开头：直接给出营养分析要点
+- 推荐：具体菜品名称和营养搭配理由
+- 分析：热量、蛋白质、碳水结构
+- 注意：营养均衡补充建议
+- 字数：150-200字"""
 
     def get_search_keywords(self, user_input: str) -> Optional[str]:
         keywords = []
-        
+
         food_keywords = ["吃", "喝", "食", "餐", "饭", "面", "肉", "菜", "汤", "奶茶", "饮料", "零食"]
         exercise_keywords = ["运动", "健身", "跑步", "游泳", "锻炼"]
         weight_keywords = ["减肥", "瘦", "胖", "体重", "脂"]
         health_keywords = ["血糖", "血压", "胆固醇", "营养"]
-        
-        has_food = any(word in user_input for word in food_keywords)
-        has_exercise = any(word in user_input for word in exercise_keywords)
-        has_weight = any(word in user_input for word in weight_keywords)
-        has_health = any(word in user_input for word in health_keywords)
-        
-        if has_food:
+
+        if any(word in user_input for word in food_keywords):
             keywords.append("GI值 升糖指数 热量 营养成分")
-        if has_exercise:
+        if any(word in user_input for word in exercise_keywords):
             keywords.append("运动营养 卡路里消耗 蛋白质补充")
-        if has_weight:
+        if any(word in user_input for word in weight_keywords):
             keywords.append("减脂 热量缺口 基础代谢")
-        if has_health:
+        if any(word in user_input for word in health_keywords):
             keywords.append("营养学 健康指标")
-        
+
         if not keywords:
             keywords.append("营养学 健康饮食 数据分析")
-        
+
         return " ".join(keywords)
-    
+
     def get_stance(self) -> str:
-        return "数据理性"
-    
+        return "均衡摄入"
+
     def get_debate_prompt(self, user_input: str, round1_logs: list, search_results: str = None) -> str:
         other_opinions = []
         for log in round1_logs:
             if log.agent_name != self.name:
                 other_opinions.append(f"【{log.agent_name}】{log.opinion}")
-        
+
         prompt = f"""用户说：「{user_input}」
 
 第一轮各方发言：
 {chr(10).join(other_opinions)}
 
 【你的任务】
-请阅读其他Agent的观点，选择1-2个你最支持或最反对的观点进行回应：
-1. 如果老中医使用模糊概念（如"上火"），要求其用现代医学语言解释
-2. 如果快乐分身主张放纵，用数据说明代价
-3. 如果被说服，可以修正你的建议
+请阅读其他Agent的观点，针对食谱推荐进行第二轮回应：
+1. 评价其他Agent推荐的菜品在营养搭配上是否合理
+2. 补充或修正使菜单更加营养均衡
+3. 注意总热量和三大营养素比例
 
 请给出你的第二轮回应。"""
-        
+
         if search_results:
             prompt += f"\n\n📚 搜索资料：\n{search_results}"
-        
+
         return prompt

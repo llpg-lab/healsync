@@ -34,6 +34,11 @@ class FinalDecision:
     dinner_recommendation: str
     action_index: int
     avatar_state: str
+    summary_reason: str = ""
+    recommended_menu: Optional[Dict[str, Any]] = None
+    prep_plan: Optional[List[str]] = None
+    nutrition_note: str = ""
+    mindset_note: str = ""
 
 class DecisionEngine:
     def __init__(self):
@@ -240,22 +245,34 @@ class DecisionEngine:
     
     def _parse_final_decision(self, response: str) -> FinalDecision:
         json_match = re.search(r'\{[\s\S]*\}', response)
-        
+
         if json_match:
             try:
                 data = json.loads(json_match.group())
+                menu = data.get("recommended_menu")
+                if menu:
+                    dish_names = [d.get("name", "") for d in menu.get("dishes", [])]
+                    dinner_rec = f"{menu.get('title', '推荐菜单')}：{'、'.join(dish_names)}"
+                else:
+                    dinner_rec = data.get("dinner_recommendation", data.get("晚餐推荐", "清炒时蔬"))
+
                 return FinalDecision(
-                    debate_result=data.get("博弈结果", "各方达成共识"),
-                    mindset_adjustment=data.get("核心心态调整", "保持平和"),
-                    today_good=data.get("今日宜", "清淡饮食"),
-                    today_bad=data.get("今日忌", "暴饮暴食"),
-                    dinner_recommendation=data.get("晚餐推荐", "清炒时蔬"),
-                    action_index=int(data.get("行动指数", 5)),
-                    avatar_state=data.get("分身状态", "neutral")
+                    debate_result=data.get("summary_reason", data.get("博弈结果", "各方达成共识")),
+                    mindset_adjustment=data.get("mindset_note", data.get("核心心态调整", "保持平和")),
+                    today_good=data.get("today_good", data.get("今日宜", "清淡饮食")),
+                    today_bad=data.get("today_bad", data.get("今日忌", "暴饮暴食")),
+                    dinner_recommendation=dinner_rec,
+                    action_index=int(data.get("action_index", data.get("行动指数", 5))),
+                    avatar_state=data.get("avatar_state", data.get("分身状态", "neutral")),
+                    summary_reason=data.get("summary_reason", ""),
+                    recommended_menu=menu,
+                    prep_plan=data.get("prep_plan"),
+                    nutrition_note=data.get("nutrition_note", ""),
+                    mindset_note=data.get("mindset_note", ""),
                 )
             except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"JSON解析失败: {e}")
-        
+
         return FinalDecision(
             debate_result="各方经过讨论达成共识",
             mindset_adjustment="保持平和心态",
