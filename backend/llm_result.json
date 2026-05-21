@@ -1,0 +1,8 @@
+{
+  "api_key": "ms-5b4d0426-d7be-4d4...",
+  "base_url": "https://api-inference.modelscope.cn/v1",
+  "model": "Qwen/Qwen3.5-397B-A17B",
+  "success": true,
+  "response": "你好！ (Nǐ hǎo!)",
+  "error": null
+}
