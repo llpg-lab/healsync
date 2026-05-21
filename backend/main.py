@@ -6,9 +6,10 @@ sys.path.insert(0, BACKEND_DIR)
 sys.path.insert(0, os.path.join(BACKEND_DIR, 'agents'))
 sys.path.insert(0, os.path.join(BACKEND_DIR, 'tools'))
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import os
@@ -18,6 +19,23 @@ import sys
 import json
 import asyncio
 from datetime import datetime
+from pathlib import Path
+
+from database import (
+    calendar_summary,
+    create_diet_record,
+    create_suggestion,
+    create_user,
+    get_conn,
+    get_session_user,
+    init_db,
+    list_diet_records,
+    list_suggestions,
+    login_user,
+    logout_token,
+    upsert_profile,
+    utc_now,
+)
 
 load_dotenv(os.path.join(BACKEND_DIR, '.env'))
 
@@ -46,6 +64,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+UPLOAD_DIR = Path(BACKEND_DIR) / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+init_db()
+
 MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", "")
 MODELSCOPE_BASE_URL = os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1")
 MODELSCOPE_MODEL = os.getenv("MODELSCOPE_MODEL", "moonshotai/Kimi-K2.5")
@@ -54,6 +77,27 @@ class DecisionRequest(BaseModel):
     user_input: str
     context: Optional[dict] = None
     quick_tabs: Optional[List[str]] = None
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    profile: Optional[dict] = None
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ProfileRequest(BaseModel):
+    profile: dict
+
+class SuggestionRequest(BaseModel):
+    ingredients: str = ""
+    mood: str = ""
+    note: str = ""
+    decision: Optional[dict] = None
+    score: Optional[int] = None
+    createdAt: Optional[str] = None
 
 class AgentOpinion(BaseModel):
     agent_name: str
@@ -84,6 +128,27 @@ from engine import DecisionEngine
 engine = DecisionEngine()
 test_llm_client = get_llm_client("test")
 
+def extract_token(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+    return authorization[len(prefix):].strip()
+
+def require_user(authorization: Optional[str]) -> dict:
+    token = extract_token(authorization)
+    session = get_session_user(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return session["user"]
+
+def current_token(authorization: Optional[str]) -> str:
+    return extract_token(authorization)
+
+def today_key() -> str:
+    return datetime.now().date().isoformat()
+
 @app.get("/")
 async def root():
     return {
@@ -98,6 +163,83 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "llm_ready": bool(MODELSCOPE_API_KEY)}
+
+@app.post("/auth/register")
+async def register(request: RegisterRequest):
+    username = request.username.strip()
+    email = request.email.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="请输入用户名")
+    if not email:
+        raise HTTPException(status_code=400, detail="请输入邮箱")
+    if len(request.password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少需要 6 位")
+    try:
+        return create_user(username, email, request.password, request.profile or {})
+    except Exception as e:
+        message = str(e)
+        if "UNIQUE" in message.upper():
+            raise HTTPException(status_code=409, detail="用户名或邮箱已存在")
+        raise HTTPException(status_code=500, detail=message)
+
+@app.post("/auth/login")
+async def login(request: LoginRequest):
+    session = login_user(request.username.strip(), request.password)
+    if not session:
+        raise HTTPException(status_code=401, detail="用户名或密码不正确")
+    return session
+
+@app.post("/auth/logout")
+async def logout(authorization: Optional[str] = Header(default=None)):
+    logout_token(current_token(authorization))
+    return {"ok": True}
+
+@app.get("/me")
+async def me(authorization: Optional[str] = Header(default=None)):
+    token = current_token(authorization)
+    session = get_session_user(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return session
+
+@app.put("/me/profile")
+async def update_profile(request: ProfileRequest, authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    with get_conn() as conn:
+        profile = upsert_profile(conn, user["id"], request.profile)
+    return {"profile": profile}
+
+@app.get("/workbench")
+async def get_workbench(date: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    day = date or today_key()
+    return {
+        "date": day,
+        "suggestions": list_suggestions(user["id"], day),
+        "records": list_diet_records(user["id"], day),
+        "calendar": calendar_summary(user["id"]),
+    }
+
+@app.get("/diet/suggestions")
+async def get_suggestions(date: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    return {"suggestions": list_suggestions(user["id"], date)}
+
+@app.post("/diet/suggestions")
+async def post_suggestion(request: SuggestionRequest, authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    suggestion = create_suggestion(user["id"], request.model_dump())
+    return suggestion
+
+@app.get("/diet/records")
+async def get_records(date: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    return {"records": list_diet_records(user["id"], date)}
+
+@app.get("/calendar/summary")
+async def get_calendar_summary(authorization: Optional[str] = Header(default=None)):
+    user = require_user(authorization)
+    return calendar_summary(user["id"])
 
 @app.post("/decide", response_model=DecisionResponse)
 async def make_decision(request: DecisionRequest):
@@ -243,16 +385,24 @@ async def make_decision_stream(request: DecisionRequest):
 @app.post("/diet/analyze")
 async def analyze_diet_with_vision(
     images: List[UploadFile] = File(...),
-    user_id: str = Form(default="default")
+    user_id: str = Form(default="default"),
+    authorization: Optional[str] = Header(default=None)
 ):
     import base64
     import json
+
+    auth_user = None
+    if authorization:
+        auth_user = require_user(authorization)
+        user_id = auth_user["id"]
 
     logger.info(f"[DIET] Vision analyze for user={user_id}, image_count={len(images)}")
     if not images:
         raise HTTPException(status_code=400, detail="请至少上传一张饮食照片")
 
     images_data = []
+    image_urls = []
+    request_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
     for img in images:
         content_type = img.content_type or "image/jpeg"
         if not content_type.startswith("image/"):
@@ -260,6 +410,14 @@ async def analyze_diet_with_vision(
         content = await img.read()
         if not content:
             raise HTTPException(status_code=400, detail=f"{img.filename} 是空文件")
+        suffix = Path(img.filename or "").suffix.lower() or ".jpg"
+        safe_user_id = user_id.replace("/", "_")
+        upload_folder = UPLOAD_DIR / safe_user_id / request_id
+        upload_folder.mkdir(parents=True, exist_ok=True)
+        image_name = f"{len(images_data) + 1}{suffix}"
+        image_path = upload_folder / image_name
+        image_path.write_bytes(content)
+        image_urls.append(f"/uploads/{safe_user_id}/{request_id}/{image_name}")
         images_data.append({
             "filename": img.filename or "image",
             "content_type": content_type,
@@ -345,7 +503,19 @@ async def analyze_diet_with_vision(
             "model_used": os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
         }
 
+        if auth_user:
+            return create_diet_record(
+                user_id=auth_user["id"],
+                food_identification=record["food_identification"],
+                analysis=record["analysis"],
+                score=score,
+                model_used=record["model_used"],
+                image_urls=image_urls,
+                created_at=record["timestamp"],
+            )
+
         save_diet_record(record)
+        record["images"] = image_urls
         return record
 
     except HTTPException:

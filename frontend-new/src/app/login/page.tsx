@@ -6,6 +6,7 @@ import { ArrowLeft, Eye, EyeOff, Utensils } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAppStore } from '@/store/useAppStore'
+import { apiFetch } from '@/lib/api'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -15,7 +16,7 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     const name = username.trim()
 
     if (!name) {
@@ -27,26 +28,25 @@ export default function LoginPage() {
       return
     }
 
-    const savedUser = localStorage.getItem('healsync_registered_user')
-    if (!savedUser) {
-      setError('未找到本地账号，请先注册')
-      return
-    }
+    try {
+      const session = await apiFetch<{
+        token: string
+        user: { id: string; username: string; email: string }
+        profile: unknown
+      }>('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: name, password }),
+      })
 
-    const user = JSON.parse(savedUser)
-    if (user.username !== name || user.password !== password) {
-      setError('用户名或密码不正确')
-      return
+      localStorage.setItem('healsync_auth_token', session.token)
+      localStorage.setItem('healsync_user', JSON.stringify(session.user))
+      if (session.profile) localStorage.setItem('healsync_profile', JSON.stringify(session.profile))
+      setUser(session.user)
+      router.push('/home')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '登录失败')
     }
-
-    const currentUser = {
-      username: user.username,
-      email: user.email,
-    }
-
-    localStorage.setItem('healsync_user', JSON.stringify(currentUser))
-    setUser(currentUser)
-    router.push('/home')
   }
 
   return (

@@ -6,6 +6,7 @@ import { ArrowLeft, Check, Eye, EyeOff, Utensils } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAppStore, type UserProfile } from '@/store/useAppStore'
+import { apiFetch } from '@/lib/api'
 
 const onboardingSteps = [
   { title: '基础信息', subtitle: '这些信息只会保存在你的浏览器本地' },
@@ -72,25 +73,36 @@ export default function RegisterPage() {
       return
     }
 
-    localStorage.setItem(
-      'healsync_registered_user',
-      JSON.stringify({ username: name, email: mail, password })
-    )
     setError('')
     setStep(1)
   }
 
-  const finishRegister = () => {
-    const user = {
-      username: username.trim(),
-      email: email.trim(),
-    }
+  const finishRegister = async () => {
+    try {
+      const session = await apiFetch<{
+        token: string
+        user: { id: string; username: string; email: string }
+        profile: UserProfile
+      }>('/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: username.trim(),
+          email: email.trim(),
+          password,
+          profile,
+        }),
+      })
 
-    localStorage.setItem('healsync_user', JSON.stringify(user))
-    localStorage.setItem('healsync_profile', JSON.stringify(profile))
-    setUser(user)
-    setUserProfile(profile)
-    router.push('/home')
+      localStorage.setItem('healsync_auth_token', session.token)
+      localStorage.setItem('healsync_user', JSON.stringify(session.user))
+      localStorage.setItem('healsync_profile', JSON.stringify(session.profile))
+      setUser(session.user)
+      setUserProfile(session.profile)
+      router.push('/home')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '注册失败')
+    }
   }
 
   const handleNext = () => {
@@ -99,7 +111,7 @@ export default function RegisterPage() {
       return
     }
 
-    finishRegister()
+    void finishRegister()
   }
 
   const handleBack = () => {

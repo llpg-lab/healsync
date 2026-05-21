@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Apple,
-  CalendarDays,
   Camera,
   CheckCircle2,
   ClipboardList,
@@ -22,9 +21,44 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useAppStore, type User, type UserProfile } from '@/store/useAppStore'
+import { API_BASE_URL, apiFetch, authHeaders, getAuthToken } from '@/lib/api'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 const SCORE_BUCKETS = [20, 40, 60, 80, 100] as const
+
+const resolveAssetUrl = (url: string) => {
+  if (!url) return url
+  if (url.startsWith('http') || url.startsWith('data:')) return url
+  return `${API_BASE_URL}${url}`
+}
+
+const localDateKey = (date = new Date()) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const localTimestampKey = (date = new Date()) => {
+  return `${localDateKey(date)}T${date.toTimeString().slice(0, 8)}`
+}
+
+const normalizeMealRecord = (record: MealRecord): MealRecord => ({
+  ...record,
+  images: record.images?.map(resolveAssetUrl),
+})
+
+const isMealRecord = (value: DietResult | MealRecord): value is MealRecord => {
+  return typeof value === 'object' && value !== null && 'result' in value
+}
+
+const scoreToGreen = (score?: number | null) => {
+  if (typeof score !== 'number') return '#ffffff'
+  const ratio = Math.max(0, Math.min(100, score)) / 100
+  const start = [255, 255, 255]
+  const end = [21, 128, 61]
+  const channel = (index: number) => Math.round(start[index] + (end[index] - start[index]) * ratio)
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`
+}
 
 type AgentOpinion = {
   agent_name: string
@@ -76,12 +110,27 @@ type DietScoreRecord = {
   createdAt: string
 }
 
+type CalendarDaySummary = {
+  date: string
+  record_count: number
+  suggestion_count: number
+  avg_score?: number | null
+}
+
+type CalendarDayDetail = {
+  date: string
+  suggestions: SuggestionRecord[]
+  records: MealRecord[]
+}
+
 type SuggestionRecord = {
   id: string
   ingredients: string
   mood: string
   note: string
   createdAt?: string
+  decision?: DecisionResponse | null
+  score?: number | null
 }
 
 type MealRecord = {
@@ -191,6 +240,7 @@ export default function HomePage() {
   const [dietResult, setDietResult] = useState<DietResult | null>(null)
   const [history, setHistory] = useState<HistoryRecord[]>([])
   const [dietScores, setDietScores] = useState<DietScoreRecord[]>([])
+  const [calendarDays, setCalendarDays] = useState<CalendarDaySummary[]>([])
   const [suggestions, setSuggestions] = useState<SuggestionRecord[]>(defaultSuggestions)
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestionRecord>(emptySuggestion)
   const [mealRecords, setMealRecords] = useState<MealRecord[]>(defaultMeals)
@@ -198,22 +248,21 @@ export default function HomePage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [notice, setNotice] = useState('')
   const [showProfileEditor, setShowProfileEditor] = useState(false)
-  const [showCalendar, setShowCalendar] = useState(false)
   const [showAgentDialog, setShowAgentDialog] = useState(false)
   const [agentEvents, setAgentEvents] = useState<AgentStreamEvent[]>([])
   const [streamFinal, setStreamFinal] = useState<AgentStreamEvent | null>(null)
   const [streamError, setStreamError] = useState('')
   const [selectedMealRecord, setSelectedMealRecord] = useState<MealRecord | null>(null)
+  const [selectedSuggestion, setSelectedSuggestion] = useState<SuggestionRecord | null>(null)
+  const [calendarDayDetail, setCalendarDayDetail] = useState<CalendarDayDetail | null>(null)
 
   useEffect(() => {
+    const token = getAuthToken()
     const savedUser = localStorage.getItem('healsync_user')
     const savedProfile = localStorage.getItem('healsync_profile')
     const savedHistory = localStorage.getItem('healsync_history')
-    const savedDietScores = localStorage.getItem('healsync_diet_scores')
-    const savedSuggestions = localStorage.getItem('healsync_suggestions')
-    const savedMeals = localStorage.getItem('healsync_meal_records')
 
-    if (!savedUser) {
+    if (!token || !savedUser) {
       router.push('/')
       return
     }
@@ -221,15 +270,25 @@ export default function HomePage() {
     setUser(JSON.parse(savedUser) as User)
     if (savedProfile) setUserProfile(JSON.parse(savedProfile) as UserProfile)
     if (savedHistory) setHistory(JSON.parse(savedHistory) as HistoryRecord[])
-    if (savedDietScores) setDietScores(JSON.parse(savedDietScores) as DietScoreRecord[])
-    if (savedSuggestions) {
-      const savedSuggestionRecords = (JSON.parse(savedSuggestions) as SuggestionRecord[]).filter(
-        (record) => !['s1', 's2', 's3'].includes(record.id),
-      )
-      setSuggestions(savedSuggestionRecords)
-      localStorage.setItem('healsync_suggestions', JSON.stringify(savedSuggestionRecords))
-    }
-    if (savedMeals) setMealRecords(JSON.parse(savedMeals) as MealRecord[])
+
+    apiFetch<{
+      suggestions: SuggestionRecord[]
+      records: MealRecord[]
+      calendar: { days: CalendarDaySummary[] }
+    }>(`/workbench?date=${localDateKey()}`)
+      .then((data) => {
+        setSuggestions(data.suggestions)
+        setMealRecords(data.records.map(normalizeMealRecord))
+        setCalendarDays(data.calendar.days)
+        setDietScores(
+          data.calendar.days
+            .filter((day) => typeof day.avg_score === 'number')
+            .map((day) => ({ score: day.avg_score || 0, createdAt: day.date })),
+        )
+      })
+      .catch((error) => {
+        setNotice(error instanceof Error ? `加载数据库记录失败：${error.message}` : '加载数据库记录失败')
+      })
   }, [router, setUser, setUserProfile])
 
   const profileSummary = useMemo(() => {
@@ -265,7 +324,16 @@ export default function HomePage() {
   const persistDietScore = (score: number) => {
     const nextScores = [{ score, createdAt: new Date().toLocaleString('zh-CN') }, ...dietScores].slice(0, 14)
     setDietScores(nextScores)
-    localStorage.setItem('healsync_diet_scores', JSON.stringify(nextScores))
+  }
+
+  const refreshCalendar = async () => {
+    const data = await apiFetch<{ days: CalendarDaySummary[] }>('/calendar/summary')
+    setCalendarDays(data.days)
+    setDietScores(
+      data.days
+        .filter((day) => typeof day.avg_score === 'number')
+        .map((day) => ({ score: day.avg_score || 0, createdAt: day.date })),
+    )
   }
 
   const runDecision = async (records = suggestions) => {
@@ -454,12 +522,23 @@ export default function HomePage() {
     const record = {
       ...draftSuggestion,
       id: crypto.randomUUID(),
-      createdAt: new Date().toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: localTimestampKey(),
     }
     const next = [record, ...suggestions]
     setSuggestions(next)
-    localStorage.setItem('healsync_suggestions', JSON.stringify(next))
     setDraftSuggestion(emptySuggestion)
+    apiFetch<SuggestionRecord>('/diet/suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(record),
+    })
+      .then((saved) => {
+        setSuggestions((current) => current.map((item) => (item.id === record.id ? saved : item)))
+        void refreshCalendar().catch(() => undefined)
+      })
+      .catch((error) => {
+        setNotice(error instanceof Error ? `饮食建议保存失败：${error.message}` : '饮食建议保存失败')
+      })
     void runDecisionStream(next)
   }
 
@@ -477,6 +556,7 @@ export default function HomePage() {
     try {
       const response = await fetch(`${API_BASE_URL}/diet/analyze`, {
         method: 'POST',
+        headers: authHeaders(),
         body,
       })
 
@@ -484,26 +564,29 @@ export default function HomePage() {
         const errorBody = await response.json().catch(() => null)
         throw new Error(errorBody?.detail || `HTTP ${response.status}`)
       }
-      const result = (await response.json()) as DietResult
-      setDietResult(result)
-      persistDietScore(result.score)
-      const createdAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-      const record: MealRecord = {
-        id: crypto.randomUUID(),
-        title: `照片分析 ${createdAt}`,
-        score: result.score,
-        note: result.food_identification.join('、') || result.analysis.nutrition || '已完成饮食分析',
-        createdAt,
-        images: imageUrls,
-        result,
-      }
+      const result = (await response.json()) as DietResult | MealRecord
+      const record = normalizeMealRecord(
+        isMealRecord(result)
+          ? result
+          : {
+              id: crypto.randomUUID(),
+              title: `照片分析 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
+              score: result.score,
+              note: result.food_identification.join('、') || result.analysis.nutrition || '已完成饮食分析',
+              createdAt: result.timestamp,
+              images: imageUrls,
+              result,
+            },
+      )
+      setDietResult(record.result || (isMealRecord(result) ? null : result))
+      persistDietScore(record.score || 0)
       const nextMeals = [
         record,
         ...mealRecords,
       ]
       setMealRecords(nextMeals)
-      localStorage.setItem('healsync_meal_records', JSON.stringify(nextMeals))
       setSelectedMealRecord(record)
+      void refreshCalendar().catch(() => undefined)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
@@ -515,11 +598,32 @@ export default function HomePage() {
   }
 
   const handleLogout = () => {
+    void apiFetch('/auth/logout', { method: 'POST' }).catch(() => undefined)
+    localStorage.removeItem('healsync_auth_token')
     localStorage.removeItem('healsync_user')
     localStorage.removeItem('healsync_profile')
     localStorage.removeItem('user_profile_prompt')
     logout()
     router.push('/')
+  }
+
+  const openCalendarDate = async (date: string) => {
+    try {
+      const data = await apiFetch<{
+        date: string
+        suggestions: SuggestionRecord[]
+        records: MealRecord[]
+        calendar: { days: CalendarDaySummary[] }
+      }>(`/workbench?date=${date}`)
+      setCalendarDayDetail({
+        date,
+        suggestions: data.suggestions,
+        records: data.records.map(normalizeMealRecord),
+      })
+      setCalendarDays(data.calendar.days)
+    } catch (error) {
+      setNotice(error instanceof Error ? `加载当日详情失败：${error.message}` : '加载当日详情失败')
+    }
   }
 
   return (
@@ -530,9 +634,10 @@ export default function HomePage() {
           profileSummary={profileSummary}
           userProfile={userProfile}
           scores={dietScores}
+          days={calendarDays}
           stateScore={averageDietScore}
           onEditProfile={() => setShowProfileEditor(true)}
-          onOpenCalendar={() => setShowCalendar(true)}
+          onSelectDate={(date) => void openCalendarDate(date)}
           onLogout={handleLogout}
         />
 
@@ -568,13 +673,16 @@ export default function HomePage() {
           onSave={(profile) => {
             setUserProfile(profile)
             localStorage.setItem('healsync_profile', JSON.stringify(profile))
+            void apiFetch('/me/profile', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ profile }),
+            }).catch((error) => {
+              setNotice(error instanceof Error ? `长期状态保存失败：${error.message}` : '长期状态保存失败')
+            })
             setShowProfileEditor(false)
           }}
         />
-      )}
-
-      {showCalendar && (
-        <CalendarModal scores={dietScores} stateScore={averageDietScore} onClose={() => setShowCalendar(false)} />
       )}
 
       {showAgentDialog && (
@@ -590,6 +698,19 @@ export default function HomePage() {
       {selectedMealRecord && (
         <DietRecordModal record={selectedMealRecord} onClose={() => setSelectedMealRecord(null)} />
       )}
+
+      {selectedSuggestion && (
+        <SuggestionDetailModal record={selectedSuggestion} onClose={() => setSelectedSuggestion(null)} />
+      )}
+
+      {calendarDayDetail && (
+        <CalendarDayDetailModal
+          detail={calendarDayDetail}
+          onClose={() => setCalendarDayDetail(null)}
+          onOpenRecord={setSelectedMealRecord}
+          onOpenSuggestion={setSelectedSuggestion}
+        />
+      )}
     </main>
   )
 }
@@ -599,18 +720,20 @@ function WorkbenchSidebar({
   profileSummary,
   userProfile,
   scores,
+  days,
   stateScore,
   onEditProfile,
-  onOpenCalendar,
+  onSelectDate,
   onLogout,
 }: {
   user: User | null
   profileSummary: string
   userProfile: UserProfile | null
   scores: DietScoreRecord[]
+  days: CalendarDaySummary[]
   stateScore: number
   onEditProfile: () => void
-  onOpenCalendar: () => void
+  onSelectDate: (date: string) => void
   onLogout: () => void
 }) {
   return (
@@ -641,17 +764,10 @@ function WorkbenchSidebar({
         </div>
       </button>
 
-      <button
-        onClick={onOpenCalendar}
-        className="rounded-2xl bg-gray-900 p-4 text-left text-white transition hover:bg-gray-800"
-      >
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-sm font-bold">饮食记录</h2>
-          <CalendarDays className="h-4 w-4 text-morandi-yellow" />
-        </div>
-        <MiniCalendar scores={scores} />
+      <div className="rounded-2xl bg-gray-900 p-4 text-white">
+        <MiniCalendar scores={scores} days={days} onSelectDate={onSelectDate} />
         <p className="mt-3 text-xs text-white/70">近 7 次饮食平均分：{stateScore}</p>
-      </button>
+      </div>
 
       <button
         onClick={onLogout}
@@ -980,7 +1096,7 @@ function DietRecordModal({ record, onClose }: { record: MealRecord; onClose: () 
   const foods = result?.food_identification?.length ? result.food_identification.join('、') : record.note
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
       <section className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
         <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
           <div>
@@ -1218,65 +1334,187 @@ function SuggestionRecordCard({ record }: { record: SuggestionRecord }) {
   )
 }
 
-function MiniCalendar({ scores }: { scores: DietScoreRecord[] }) {
-  const doneDays = new Set(scores.slice(0, 7).map((_, index) => index + 1))
+function MiniCalendar({
+  scores,
+  days,
+  onSelectDate,
+}: {
+  scores: DietScoreRecord[]
+  days: CalendarDaySummary[]
+  onSelectDate: (date: string) => void
+}) {
+  const summaryByDate = new Map(days.map((day) => [day.date, day]))
+  const today = new Date()
+  const year = today.getFullYear()
+  const month = today.getMonth()
+  const firstDay = new Date(year, month, 1)
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const leadingBlanks = (firstDay.getDay() + 6) % 7
+  const weekdays = ['一', '二', '三', '四', '五', '六', '日']
+  const cells = [
+    ...Array.from({ length: leadingBlanks }, (_, index) => ({ key: `blank-${index}`, label: '', date: '' })),
+    ...Array.from({ length: daysInMonth }, (_, index) => {
+      const date = new Date(year, month, index + 1)
+      const key = localDateKey(date)
+      return { key, label: String(index + 1), date: key }
+    }),
+  ]
 
   return (
-    <div className="grid grid-cols-7 gap-1 text-center text-[10px]">
-      {Array.from({ length: 14 }, (_, index) => index + 1).map((day) => (
-        <span
-          key={day}
-          className={`flex h-6 items-center justify-center rounded-full ${
-            doneDays.has(day) ? 'bg-morandi-yellow text-gray-900' : 'bg-white/10 text-white/70'
-          }`}
-        >
-          {day}
-        </span>
-      ))}
+    <div>
+      <div className="mb-2 grid grid-cols-7 text-center text-[10px] text-white/50">
+        {weekdays.map((day) => (
+          <span key={day}>{day}</span>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[10px]">
+        {cells.map((day) => {
+          if (!day.date) return <span key={day.key} className="h-7" />
+          const summary = summaryByDate.get(day.date)
+          const hasRecord = Boolean(summary?.record_count)
+          const hasSuggestionOnly = !hasRecord && Boolean(summary?.suggestion_count)
+          const fill = hasRecord ? scoreToGreen(summary?.avg_score) : 'transparent'
+          const textColor = hasRecord && (summary?.avg_score || 0) >= 68 ? '#ffffff' : undefined
+
+          return (
+            <button
+              key={day.key}
+              type="button"
+              onClick={() => onSelectDate(day.date)}
+              title={`${day.date} 饮食记录 ${summary?.record_count || 0} 条，建议 ${summary?.suggestion_count || 0} 条`}
+              className={`mx-auto flex h-7 w-7 items-center justify-center rounded-full transition hover:ring-2 hover:ring-morandi-yellow ${
+                hasSuggestionOnly ? 'border border-morandi-yellow text-white' : 'text-white/75'
+              }`}
+              style={{ backgroundColor: fill, color: textColor }}
+            >
+              {day.label}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
-function CalendarModal({
-  scores,
-  stateScore,
+function CalendarDayDetailModal({
+  detail,
   onClose,
+  onOpenRecord,
+  onOpenSuggestion,
 }: {
-  scores: DietScoreRecord[]
-  stateScore: number
+  detail: CalendarDayDetail
   onClose: () => void
+  onOpenRecord: (record: MealRecord) => void
+  onOpenSuggestion: (record: SuggestionRecord) => void
 }) {
-  const days = Array.from({ length: 30 }, (_, index) => index + 1)
-  const doneDays = new Set(scores.slice(0, 7).map((_, index) => index + 1))
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 p-4 backdrop-blur-sm">
-      <section className="w-full max-w-xl rounded-[1.25rem] bg-white p-6 shadow-2xl">
-        <div className="mb-5 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
+      <section className="flex max-h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
+        <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
           <div>
-            <h2 className="text-xl font-bold">饮食日历</h2>
-            <p className="mt-1 text-sm text-gray-500">近 7 次平均分：{stateScore}</p>
+            <h2 className="text-lg font-bold">{detail.date}</h2>
+            <p className="mt-1 text-sm text-gray-500">当日饮食记录与饮食建议</p>
           </div>
           <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-cream">
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="mb-4 grid grid-cols-7 text-center text-xs text-gray-500">
-          {['一', '二', '三', '四', '五', '六', '日'].map((day) => (
-            <span key={day}>{day}</span>
-          ))}
-        </div>
-        <div className="grid grid-cols-7 gap-3 text-center text-sm">
-          {days.map((day) => (
-            <div
-              key={day}
-              className={`mx-auto flex h-11 w-11 items-center justify-center rounded-full ${
-                doneDays.has(day) ? 'bg-gray-900 text-morandi-yellow' : 'bg-cream text-gray-700'
-              }`}
-            >
-              {day}
+
+        <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 md:grid-cols-2">
+          <section>
+            <h3 className="mb-3 text-sm font-bold">饮食记录</h3>
+            <div className="space-y-3">
+              {detail.records.length > 0 ? (
+                detail.records.map((record) => (
+                  <button
+                    key={record.id}
+                    type="button"
+                    onClick={() => onOpenRecord(record)}
+                    className="w-full rounded-2xl bg-cream p-4 text-left transition hover:bg-morandi-yellow/25"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="text-sm font-bold">{record.title}</span>
+                      <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold">{record.score ?? '--'}</span>
+                    </div>
+                    {record.images && record.images.length > 0 && (
+                      <div className="mb-3 flex gap-2 overflow-hidden">
+                        {record.images.slice(0, 3).map((image, index) => (
+                          <img key={`${record.id}-${index}`} src={image} alt="" className="h-12 w-12 rounded-xl object-cover" />
+                        ))}
+                      </div>
+                    )}
+                    <p className="line-clamp-2 text-xs leading-5 text-gray-600">{record.note}</p>
+                  </button>
+                ))
+              ) : (
+                <p className="rounded-2xl bg-cream p-4 text-sm text-gray-500">这一天还没有饮食记录。</p>
+              )}
             </div>
-          ))}
+          </section>
+
+          <section>
+            <h3 className="mb-3 text-sm font-bold">饮食建议</h3>
+            <div className="space-y-3">
+              {detail.suggestions.length > 0 ? (
+                detail.suggestions.map((record) => (
+                  <button
+                    key={record.id}
+                    type="button"
+                    onClick={() => onOpenSuggestion(record)}
+                    className="w-full rounded-2xl bg-cream p-4 text-left transition hover:bg-morandi-yellow/25"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="text-sm font-bold">{record.ingredients || '未填写食材'}</span>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs text-gray-500">{record.mood || '未填写'}</span>
+                    </div>
+                    <p className="line-clamp-2 text-xs leading-5 text-gray-600">{record.note || '未补充短期状态'}</p>
+                  </button>
+                ))
+              ) : (
+                <p className="rounded-2xl bg-cream p-4 text-sm text-gray-500">这一天还没有饮食建议。</p>
+              )}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function SuggestionDetailModal({ record, onClose }: { record: SuggestionRecord; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
+      <section className="max-h-[86vh] w-full max-w-2xl overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
+        <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
+          <div>
+            <h2 className="text-lg font-bold">饮食建议详情</h2>
+            <p className="mt-1 text-sm text-gray-500">{record.createdAt || '建议记录'}</p>
+          </div>
+          <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-cream">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="space-y-3 overflow-y-auto p-5">
+          <article className="rounded-2xl bg-cream p-4">
+            <h3 className="text-sm font-bold">手边食材</h3>
+            <p className="mt-2 text-sm leading-6 text-gray-600">{record.ingredients || '未填写'}</p>
+          </article>
+          <article className="rounded-2xl bg-cream p-4">
+            <h3 className="text-sm font-bold">情绪状态</h3>
+            <p className="mt-2 text-sm leading-6 text-gray-600">{record.mood || '未填写'}</p>
+          </article>
+          <article className="rounded-2xl bg-cream p-4">
+            <h3 className="text-sm font-bold">补充说明</h3>
+            <p className="mt-2 text-sm leading-6 text-gray-600">{record.note || '未补充短期状态'}</p>
+          </article>
+          {record.decision && (
+            <article className="rounded-2xl bg-gray-900 p-4 text-white">
+              <h3 className="text-sm font-bold">综合建议</h3>
+              <p className="mt-2 text-sm leading-6 text-white/80">
+                {record.decision.final_decision?.dinner_recommendation || record.decision.final_decision?.debate_result}
+              </p>
+            </article>
+          )}
         </div>
       </section>
     </div>
