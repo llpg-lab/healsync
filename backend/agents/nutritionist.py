@@ -6,7 +6,7 @@ class NutritionistAgent(BaseAgent):
         super().__init__(
             name="营养师",
             role="临床营养学博士",
-            has_search=True
+            has_search=False
         )
 
     def get_system_prompt(self) -> str:

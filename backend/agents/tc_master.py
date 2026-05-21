@@ -6,7 +6,7 @@ class TCMasterAgent(BaseAgent):
         super().__init__(
             name="老中医",
             role="养生专家",
-            has_search=True
+            has_search=False
         )
 
     def get_system_prompt(self) -> str:
