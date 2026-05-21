@@ -241,6 +241,120 @@ async def make_decision_stream(request: DecisionRequest):
     )
 
 @app.post("/diet/analyze")
+async def analyze_diet_with_vision(
+    images: List[UploadFile] = File(...),
+    user_id: str = Form(default="default")
+):
+    import base64
+    import json
+
+    logger.info(f"[DIET] Vision analyze for user={user_id}, image_count={len(images)}")
+    if not images:
+        raise HTTPException(status_code=400, detail="请至少上传一张饮食照片")
+
+    images_data = []
+    for img in images:
+        content_type = img.content_type or "image/jpeg"
+        if not content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail=f"{img.filename} 不是图片文件")
+        content = await img.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"{img.filename} 是空文件")
+        images_data.append({
+            "filename": img.filename or "image",
+            "content_type": content_type,
+            "content": base64.b64encode(content).decode("utf-8"),
+        })
+
+    prompt = f"""请分析用户上传的 {len(images_data)} 张饮食照片。必须观察图片内容，识别实际食物，不要套用示例答案。
+
+请严格只输出 JSON，不要输出 Markdown 或额外说明：
+{{
+  "food_identification": ["食物1", "食物2"],
+  "analysis": {{
+    "tcm": "从中医角度分析性味、适宜人群和注意事项，100字以内",
+    "nutrition": "从营养角度分析热量、营养结构、搭配建议，100字以内",
+    "psychology": "从心理角度分析饮食情绪、满足感和进食动机，100字以内"
+  }},
+  "score": 85
+}}
+
+评分标准：90-100 非常健康，70-89 比较健康，50-69 一般，30-49 不太健康，0-29 非常不健康。"""
+
+    try:
+        client = test_llm_client._get_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="模型客户端不可用，请检查 MODELSCOPE_API_KEY 和 openai 依赖")
+
+        content = [{"type": "text", "text": prompt}]
+        for index, img in enumerate(images_data, start=1):
+            content.append({"type": "text", "text": f"图片 {index}：{img['filename']}"})
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{img['content_type']};base64,{img['content']}"
+                },
+            })
+
+        response = client.chat.completions.create(
+            model=os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
+            messages=[
+                {"role": "system", "content": "你是专业营养师和中医师。你必须基于用户上传的图片进行饮食分析，并始终输出合法 JSON。"},
+                {"role": "user", "content": content},
+            ],
+            max_tokens=1000,
+            temperature=0.4,
+        )
+
+        result_text = response.choices[0].message.content or ""
+        logger.info(f"[DIET] Vision model response: {result_text[:300]}...")
+        json_start = result_text.find("{")
+        json_end = result_text.rfind("}") + 1
+        json_text = result_text[json_start:json_end] if json_start >= 0 and json_end > json_start else result_text
+        try:
+            result = json.loads(json_text)
+        except Exception as parse_error:
+            logger.error(f"[DIET] Failed to parse model JSON: {parse_error}; raw={result_text[:500]}")
+            raise HTTPException(status_code=502, detail="模型已返回，但结果不是合法 JSON，请重试")
+
+        food_identification = result.get("food_identification") or []
+        if not isinstance(food_identification, list):
+            food_identification = [str(food_identification)]
+
+        analysis = result.get("analysis") or {}
+        if not isinstance(analysis, dict):
+            analysis = {"nutrition": str(analysis)}
+
+        try:
+            score = int(result.get("score", 60))
+        except (TypeError, ValueError):
+            score = 60
+        score = max(0, min(100, score))
+
+        record = {
+            "food_identification": [str(item) for item in food_identification],
+            "analysis": {
+                "tcm": str(analysis.get("tcm", "暂无中医分析")),
+                "nutrition": str(analysis.get("nutrition", "暂无营养分析")),
+                "psychology": str(analysis.get("psychology", "暂无心理分析")),
+            },
+            "score": score,
+            "user_id": user_id,
+            "timestamp": datetime.now().isoformat(),
+            "image_count": len(images_data),
+            "model_used": os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
+        }
+
+        save_diet_record(record)
+        return record
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DIET] Vision analyze error: {e}")
+        raise HTTPException(status_code=502, detail=f"饮食图片模型分析失败：{e}")
+
+@app.post("/diet/analyze/mock")
 async def analyze_diet(
     images: List[UploadFile] = File(...),
     user_id: str = Form(default="default")

@@ -14,6 +14,8 @@ frontend-new/server.out.log
 frontend-new/server.err.log
 backend/server.out.log
 backend/server.err.log
+data/
+backend/data/
 
 .env
 .env.*

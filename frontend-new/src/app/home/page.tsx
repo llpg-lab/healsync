@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Apple,
@@ -13,7 +13,6 @@ import {
   Loader2,
   LogOut,
   NotebookPen,
-  Plus,
   Save,
   Sparkles,
   Upload,
@@ -60,6 +59,8 @@ type DietResult = {
   }
   score: number
   timestamp?: string
+  image_count?: number
+  model_used?: string
 }
 
 type HistoryRecord = {
@@ -88,6 +89,34 @@ type MealRecord = {
   title: string
   score?: number
   note: string
+  createdAt?: string
+  images?: string[]
+  result?: DietResult
+}
+
+type SelectedDietPhoto = {
+  id: string
+  file: File
+  preview: string
+}
+
+type AgentStreamEvent = {
+  type: 'agent_complete' | 'final_decision' | 'error' | 'done'
+  agent_name?: string
+  role?: string
+  opinion?: string
+  stance?: string
+  round_num?: number
+  search_query?: string | null
+  debate_result?: string
+  mindset_adjustment?: string
+  today_good?: string
+  today_bad?: string
+  dinner_recommendation?: string
+  action_index?: number
+  avatar_state?: string
+  wellness_score?: number
+  message?: string
 }
 
 const ingredientOptions = ['鸡蛋', '青菜', '米饭', '豆腐', '番茄', '牛奶', '燕麦', '鱼肉']
@@ -170,6 +199,11 @@ export default function HomePage() {
   const [notice, setNotice] = useState('')
   const [showProfileEditor, setShowProfileEditor] = useState(false)
   const [showCalendar, setShowCalendar] = useState(false)
+  const [showAgentDialog, setShowAgentDialog] = useState(false)
+  const [agentEvents, setAgentEvents] = useState<AgentStreamEvent[]>([])
+  const [streamFinal, setStreamFinal] = useState<AgentStreamEvent | null>(null)
+  const [streamError, setStreamError] = useState('')
+  const [selectedMealRecord, setSelectedMealRecord] = useState<MealRecord | null>(null)
 
   useEffect(() => {
     const savedUser = localStorage.getItem('healsync_user')
@@ -234,15 +268,6 @@ export default function HomePage() {
     localStorage.setItem('healsync_diet_scores', JSON.stringify(nextScores))
   }
 
-  const addMealRecord = () => {
-    const next = [
-      ...mealRecords,
-      { id: crypto.randomUUID(), title: `饮食记录 ${mealRecords.length + 1}`, note: '等待上传照片分析' },
-    ]
-    setMealRecords(next)
-    localStorage.setItem('healsync_meal_records', JSON.stringify(next))
-  }
-
   const runDecision = async (records = suggestions) => {
     const currentContext = records
       .map((item, index) => `${index + 1}. 手边食材：${item.ingredients || '未填写'}；情绪：${item.mood}；备注：${item.note}`)
@@ -294,6 +319,137 @@ export default function HomePage() {
     }
   }
 
+  const runDecisionStream = async (records = suggestions) => {
+    const currentContext = records
+      .map((item, index) => `${index + 1}. 食材：${item.ingredients || '未填写'}；情绪：${item.mood}；备注：${item.note}`)
+      .join('\n')
+    const requestBody = {
+      user_input: currentContext,
+      quick_tabs: records.map((item) => item.mood),
+      context: {
+        profile: userProfile,
+        profile_prompt: getUserProfilePrompt(),
+        short_term_state: records,
+        time: new Date().toLocaleString('zh-CN'),
+        diet_score_window: dietScores.slice(0, 7),
+      },
+    }
+
+    setIsDeciding(true)
+    setNotice('')
+    setStreamError('')
+    setStreamFinal(null)
+    setAgentEvents([])
+    setShowAgentDialog(true)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/decide/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      })
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.body) throw new Error('No stream body')
+
+      const streamedAgents: AgentStreamEvent[] = []
+      const decoder = new TextDecoder()
+      const reader = response.body.getReader()
+      let buffer = ''
+
+      const handleStreamEvent = (event: AgentStreamEvent) => {
+        if (event.type === 'agent_complete') {
+          streamedAgents.push(event)
+          setAgentEvents((current) => [...current, event])
+          return
+        }
+
+        if (event.type === 'final_decision') {
+          setStreamFinal(event)
+          const data: DecisionResponse = {
+            round1_debate: streamedAgents
+              .filter((item) => item.round_num === 1)
+              .map((item) => ({
+                agent_name: item.agent_name || '',
+                role: item.role || '',
+                opinion: item.opinion || '',
+                stance: item.stance || '',
+                round_num: item.round_num || 1,
+                search_query: item.search_query,
+              })),
+            round2_debate: streamedAgents
+              .filter((item) => item.round_num === 2)
+              .map((item) => ({
+                agent_name: item.agent_name || '',
+                role: item.role || '',
+                opinion: item.opinion || '',
+                stance: item.stance || '',
+                round_num: item.round_num || 2,
+                search_query: item.search_query,
+              })),
+            final_decision: {
+              debate_result: event.debate_result || '',
+              mindset_adjustment: event.mindset_adjustment || '',
+              today_good: event.today_good || '',
+              today_bad: event.today_bad || '',
+              dinner_recommendation: event.dinner_recommendation || '',
+              action_index: event.action_index || 0,
+              avatar_state: event.avatar_state || 'neutral',
+            },
+            wellness_score: event.wellness_score || 0,
+          }
+
+          setDecision(data)
+          persistHistory({
+            id: crypto.randomUUID(),
+            input: '饮食建议决策',
+            score: data.wellness_score,
+            summary: data.final_decision.dinner_recommendation,
+            createdAt: new Date().toLocaleString('zh-CN'),
+          })
+        }
+
+        if (event.type === 'error') {
+          throw new Error(event.message || 'Stream error')
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() || ''
+
+        for (const chunk of chunks) {
+          const dataLine = chunk
+            .split('\n')
+            .find((line) => line.startsWith('data:'))
+            ?.replace(/^data:\s*/, '')
+
+          if (!dataLine) continue
+          const event = JSON.parse(dataLine) as AgentStreamEvent
+          if (event.type === 'done') continue
+          handleStreamEvent(event)
+        }
+      }
+    } catch (error) {
+      setDecision(fallbackDecision)
+      setStreamError(error instanceof Error ? error.message : '后端流式决策暂时不可用')
+      persistHistory({
+        id: crypto.randomUUID(),
+        input: '饮食建议决策',
+        score: fallbackDecision.wellness_score,
+        summary: fallbackDecision.final_decision.dinner_recommendation,
+        createdAt: new Date().toLocaleString('zh-CN'),
+      })
+      setNotice('后端流式决策暂时不可用，已展示本地备用建议。')
+    } finally {
+      setIsDeciding(false)
+    }
+  }
+
   const handleGenerateSuggestion = () => {
     const record = {
       ...draftSuggestion,
@@ -304,17 +460,18 @@ export default function HomePage() {
     setSuggestions(next)
     localStorage.setItem('healsync_suggestions', JSON.stringify(next))
     setDraftSuggestion(emptySuggestion)
-    void runDecision(next)
+    void runDecisionStream(next)
   }
 
-  const analyzeDiet = async (files: FileList | null) => {
-    if (!files?.length) return
+  const analyzeDiet = async (files: FileList | File[] | null, imageUrls: string[] = []) => {
+    const imageFiles = Array.from(files || [])
+    if (imageFiles.length === 0) return false
 
     setIsAnalyzing(true)
     setNotice('')
 
     const body = new FormData()
-    Array.from(files).forEach((file) => body.append('images', file))
+    imageFiles.forEach((file) => body.append('images', file))
     body.append('user_id', user?.username || 'default')
 
     try {
@@ -323,46 +480,35 @@ export default function HomePage() {
         body,
       })
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null)
+        throw new Error(errorBody?.detail || `HTTP ${response.status}`)
+      }
       const result = (await response.json()) as DietResult
       setDietResult(result)
       persistDietScore(result.score)
-      const nextMeals = [
-        {
-          id: crypto.randomUUID(),
-          title: `照片分析 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`,
-          score: result.score,
-          note: result.food_identification.join('、') || result.analysis.nutrition || '已完成饮食分析',
-        },
-        ...mealRecords,
-      ]
-      setMealRecords(nextMeals)
-      localStorage.setItem('healsync_meal_records', JSON.stringify(nextMeals))
-    } catch {
-      const fallbackResult = {
-        food_identification: Array.from(files).map((file) => file.name),
-        analysis: {
-          tcm: '饮食整体偏温和，建议继续观察饱腹感和餐后精神状态。',
-          nutrition: '这餐可作为参考记录，建议保证蛋白质、蔬菜和主食搭配。',
-          psychology: '记录饮食本身就是一次稳定的自我观察动作。',
-        },
-        score: 72,
-        timestamp: new Date().toISOString(),
+      const createdAt = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      const record: MealRecord = {
+        id: crypto.randomUUID(),
+        title: `照片分析 ${createdAt}`,
+        score: result.score,
+        note: result.food_identification.join('、') || result.analysis.nutrition || '已完成饮食分析',
+        createdAt,
+        images: imageUrls,
+        result,
       }
-      setDietResult(fallbackResult)
-      persistDietScore(fallbackResult.score)
       const nextMeals = [
-        {
-          id: crypto.randomUUID(),
-          title: '本地备用分析',
-          score: fallbackResult.score,
-          note: fallbackResult.food_identification.join('、') || fallbackResult.analysis.nutrition,
-        },
+        record,
         ...mealRecords,
       ]
       setMealRecords(nextMeals)
       localStorage.setItem('healsync_meal_records', JSON.stringify(nextMeals))
-      setNotice('后端饮食分析接口暂时不可用，已展示本地备用结果。')
+      setSelectedMealRecord(record)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误'
+      setNotice(`饮食图片分析失败：${message}`)
+      return false
     } finally {
       setIsAnalyzing(false)
     }
@@ -409,10 +555,9 @@ export default function HomePage() {
           submitSuggestionDecision={handleGenerateSuggestion}
           isDeciding={isDeciding}
           mealRecords={mealRecords}
-          addMealRecord={addMealRecord}
           analyzeDiet={analyzeDiet}
           isAnalyzing={isAnalyzing}
-          dietResult={dietResult}
+          onOpenMealRecord={setSelectedMealRecord}
         />
       </div>
 
@@ -430,6 +575,20 @@ export default function HomePage() {
 
       {showCalendar && (
         <CalendarModal scores={dietScores} stateScore={averageDietScore} onClose={() => setShowCalendar(false)} />
+      )}
+
+      {showAgentDialog && (
+        <AgentDebateModal
+          events={agentEvents}
+          finalEvent={streamFinal}
+          isDeciding={isDeciding}
+          error={streamError}
+          onClose={() => setShowAgentDialog(false)}
+        />
+      )}
+
+      {selectedMealRecord && (
+        <DietRecordModal record={selectedMealRecord} onClose={() => setSelectedMealRecord(null)} />
       )}
     </main>
   )
@@ -610,10 +769,9 @@ function RightWorkbench({
   submitSuggestionDecision,
   isDeciding,
   mealRecords,
-  addMealRecord,
   analyzeDiet,
   isAnalyzing,
-  dietResult,
+  onOpenMealRecord,
 }: {
   suggestions: SuggestionRecord[]
   draftSuggestion: SuggestionRecord
@@ -621,12 +779,50 @@ function RightWorkbench({
   submitSuggestionDecision: () => void
   isDeciding: boolean
   mealRecords: MealRecord[]
-  addMealRecord: () => void
-  analyzeDiet: (files: FileList | null) => void
+  analyzeDiet: (files: FileList | File[] | null, imageUrls?: string[]) => Promise<boolean>
   isAnalyzing: boolean
-  dietResult: DietResult | null
+  onOpenMealRecord: (record: MealRecord) => void
 }) {
   const [activeTab, setActiveTab] = useState<'suggestions' | 'records'>('suggestions')
+  const [selectedDietPhotos, setSelectedDietPhotos] = useState<SelectedDietPhoto[]>([])
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const addDietPhotos = async (files: FileList | null) => {
+    const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
+
+    const nextPhotos = await Promise.all(
+      imageFiles.map(
+        (file) =>
+          new Promise<SelectedDietPhoto>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => {
+              resolve({
+                id: crypto.randomUUID(),
+                file,
+                preview: String(reader.result || ''),
+              })
+            }
+            reader.readAsDataURL(file)
+          }),
+      ),
+    )
+    setSelectedDietPhotos((current) => [...current, ...nextPhotos])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const removeDietPhoto = (id: string) => {
+    setSelectedDietPhotos((current) => current.filter((photo) => photo.id !== id))
+  }
+
+  const submitDietRecord = async () => {
+    if (selectedDietPhotos.length === 0 || isAnalyzing) return
+    const ok = await analyzeDiet(
+      selectedDietPhotos.map((photo) => photo.file),
+      selectedDietPhotos.map((photo) => photo.preview),
+    )
+    if (ok) setSelectedDietPhotos([])
+  }
 
   return (
     <aside className="flex min-h-0 flex-col rounded-[1.25rem] bg-white p-5 shadow-sm">
@@ -645,15 +841,6 @@ function RightWorkbench({
             onClick={() => setActiveTab('records')}
           />
         </div>
-        {activeTab === 'records' && (
-          <button
-            onClick={addMealRecord}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-900 text-morandi-yellow transition hover:bg-gray-800"
-            aria-label="新增饮食记录"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-        )}
       </div>
 
       <section className={`${activeTab === 'suggestions' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
@@ -680,37 +867,85 @@ function RightWorkbench({
       </section>
 
       <section className={`${activeTab === 'records' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
-        <PanelHeader title="饮食记录" icon={Camera} onAdd={addMealRecord} />
-        <label className="mb-4 flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-morandi-yellow bg-cream/70 p-4 text-center transition hover:bg-cream">
-          {isAnalyzing ? <Loader2 className="mb-2 h-6 w-6 animate-spin" /> : <Upload className="mb-2 h-6 w-6" />}
-          <span className="text-sm font-semibold">上传饮食照片分析打分</span>
-          <span className="mt-1 text-xs text-gray-500"></span>
-          <input
-            type="file"
-            multiple
-            accept="image/*"
-            className="hidden"
-            onChange={(event) => analyzeDiet(event.target.files)}
-          />
-        </label>
-        <div className="space-y-3">
-          {mealRecords.map((record) => (
-            <article key={record.id} className="rounded-2xl bg-cream p-4">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-bold">{record.title}</h3>
-                <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold">
-                  {record.score ?? '--'}
-                </span>
-              </div>
-              <p className="line-clamp-2 text-xs leading-5 text-gray-600">{record.note}</p>
-            </article>
-          ))}
+        <PanelHeader title="饮食记录" icon={Camera} />
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+          {mealRecords.length > 0 ? (
+            mealRecords.map((record) => (
+              <button
+                key={record.id}
+                type="button"
+                onClick={() => onOpenMealRecord(record)}
+                className="w-full rounded-2xl bg-cream p-4 text-left transition hover:bg-morandi-yellow/25"
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-bold">{record.title}</h3>
+                  <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold">
+                    {record.score ?? '--'}
+                  </span>
+                </div>
+                {record.images && record.images.length > 0 && (
+                  <div className="mb-3 flex gap-2 overflow-hidden">
+                    {record.images.slice(0, 4).map((image, index) => (
+                      <img
+                        key={`${record.id}-${index}`}
+                        src={image}
+                        alt=""
+                        className="h-12 w-12 rounded-xl object-cover"
+                      />
+                    ))}
+                  </div>
+                )}
+                <p className="line-clamp-2 text-xs leading-5 text-gray-600">{record.note}</p>
+              </button>
+            ))
+          ) : (
+            <p className="rounded-2xl bg-cream p-4 text-sm text-gray-500">当日饮食记录会按上传顺序从上往下排列在这里。</p>
+          )}
         </div>
-        {dietResult && (
-          <p className="mt-4 rounded-2xl bg-gray-900 px-4 py-3 text-sm text-white">
-            最新分析：{dietResult.score} 分 · {dietResult.analysis.nutrition || '已完成饮食分析'}
-          </p>
-        )}
+
+        <div className="mt-4 rounded-2xl bg-cream p-4">
+          <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-morandi-yellow bg-white/55 p-4 text-center transition hover:bg-white/80">
+            {isAnalyzing ? <Loader2 className="mb-2 h-6 w-6 animate-spin" /> : <Upload className="mb-2 h-6 w-6" />}
+            <span className="text-sm font-semibold">选择饮食照片</span>
+            <span className="mt-1 text-xs text-gray-500">
+              {selectedDietPhotos.length > 0 ? `已选择 ${selectedDietPhotos.length} 张，可继续添加或删除` : '支持分批选择多张图片'}
+            </span>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => void addDietPhotos(event.target.files)}
+            />
+          </label>
+          {selectedDietPhotos.length > 0 && (
+            <div className="mt-3 grid grid-cols-4 gap-2">
+              {selectedDietPhotos.map((photo) => (
+                <div key={photo.id} className="group relative aspect-square overflow-hidden rounded-xl bg-white">
+                  <img src={photo.preview} alt={photo.file.name} className="h-full w-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => removeDietPhoto(photo.id)}
+                    className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-gray-900/80 text-white"
+                    aria-label="删除照片"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <motion.button
+            whileTap={{ scale: 0.98 }}
+            onClick={submitDietRecord}
+            disabled={isAnalyzing || selectedDietPhotos.length === 0}
+            className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-900 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {isAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            上传饮食记录
+          </motion.button>
+        </div>
       </section>
     </aside>
   )
@@ -740,14 +975,162 @@ function WorkbenchTabButton({
   )
 }
 
+function DietRecordModal({ record, onClose }: { record: MealRecord; onClose: () => void }) {
+  const result = record.result
+  const foods = result?.food_identification?.length ? result.food_identification.join('、') : record.note
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
+      <section className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-[1.25rem] bg-white shadow-2xl">
+        <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
+          <div>
+            <h2 className="text-lg font-bold">{record.title}</h2>
+            <p className="mt-1 text-sm text-gray-500">{record.createdAt || '饮食记录详情'}</p>
+          </div>
+          <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-cream">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {record.images && record.images.length > 0 && (
+            <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3">
+              {record.images.map((image, index) => (
+                <img
+                  key={`${record.id}-detail-${index}`}
+                  src={image}
+                  alt={`饮食照片 ${index + 1}`}
+                  className="aspect-square w-full rounded-2xl object-cover"
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl bg-gray-900 p-4 text-white">
+            <div>
+              <div className="text-xs text-white/60">识别结果</div>
+              <div className="mt-1 text-sm font-semibold">{foods || '暂无识别结果'}</div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-3xl font-black leading-none">{record.score ?? result?.score ?? '--'}</div>
+              <div className="mt-1 text-xs text-white/60">饮食分值</div>
+            </div>
+          </div>
+
+          {result ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              <AnalysisBlock title="中医分析" text={result.analysis.tcm} />
+              <AnalysisBlock title="营养分析" text={result.analysis.nutrition} />
+              <AnalysisBlock title="心理分析" text={result.analysis.psychology} />
+            </div>
+          ) : (
+            <p className="rounded-2xl bg-cream p-4 text-sm leading-6 text-gray-600">{record.note}</p>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function AnalysisBlock({ title, text }: { title: string; text?: string }) {
+  return (
+    <article className="rounded-2xl bg-cream p-4">
+      <h3 className="text-sm font-bold">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-gray-600">{text || '暂无分析'}</p>
+    </article>
+  )
+}
+
+function AgentDebateModal({
+  events,
+  finalEvent,
+  isDeciding,
+  error,
+  onClose,
+}: {
+  events: AgentStreamEvent[]
+  finalEvent: AgentStreamEvent | null
+  isDeciding: boolean
+  error: string
+  onClose: () => void
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [events.length, finalEvent, error])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/45 p-4 backdrop-blur-sm">
+      <section className="flex max-h-[86vh] w-full max-w-4xl flex-col rounded-[1.25rem] bg-white shadow-2xl">
+        <div className="flex items-center justify-between gap-4 border-b border-cream px-5 py-4">
+          <div>
+            <h2 className="text-lg font-bold">Agent 实时讨论</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              {isDeciding ? '正在生成饮食状态建议，各个 agent 会陆续发言。' : '讨论已结束，可以关闭窗口。'}
+            </p>
+          </div>
+          <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-cream">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          {events.length === 0 && !error && (
+            <div className="flex items-center gap-3 rounded-2xl bg-cream p-4 text-sm text-gray-600">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              等待第一个 agent 发言...
+            </div>
+          )}
+
+          {events.map((event, index) => (
+            <article key={`${event.agent_name}-${event.round_num}-${index}`} className="rounded-2xl bg-cream p-4">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-morandi-yellow">
+                    第 {event.round_num || '-'} 轮
+                  </span>
+                  <h3 className="text-sm font-bold">{event.agent_name || 'Agent'}</h3>
+                  {event.stance && <span className="text-xs text-gray-500">{event.stance}</span>}
+                </div>
+                {event.search_query && <span className="text-xs text-gray-500">检索：{event.search_query}</span>}
+              </div>
+              <p className="whitespace-pre-wrap text-sm leading-6 text-gray-700">{event.opinion}</p>
+            </article>
+          ))}
+
+          {finalEvent && (
+            <article className="rounded-2xl bg-gray-900 p-4 text-white">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h3 className="font-bold">最终综合建议</h3>
+                <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-gray-900">
+                  {finalEvent.wellness_score ?? '--'}
+                </span>
+              </div>
+              <p className="text-sm leading-6 text-white/85">{finalEvent.dinner_recommendation}</p>
+              {finalEvent.debate_result && (
+                <p className="mt-3 text-sm leading-6 text-white/70">{finalEvent.debate_result}</p>
+              )}
+            </article>
+          )}
+
+          {error && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              流式决策失败：{error}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function PanelHeader({
   title,
   icon: Icon,
-  onAdd,
 }: {
   title: string
   icon: LucideIcon
-  onAdd?: () => void
 }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
@@ -757,15 +1140,6 @@ function PanelHeader({
         </span>
         <h2 className="text-lg font-bold">{title}</h2>
       </div>
-      {false && onAdd && (
-        <button
-          onClick={onAdd}
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-900 text-morandi-yellow transition hover:bg-gray-800"
-          aria-label={`新增${title}`}
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      )}
     </div>
   )
 }
