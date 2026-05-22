@@ -21,6 +21,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("HEALSYNC_DB_PATH", BACKEND_DIR / "data" / "healsync.db"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
+LAST_DB_ERROR: str | None = None
 
 
 def utc_now() -> str:
@@ -65,12 +66,14 @@ def get_conn() -> Any:
 
 
 def init_db() -> None:
+    global LAST_DB_ERROR
     if USE_POSTGRES:
         with get_conn() as conn:
             for statement in POSTGRES_SCHEMA.split(";"):
                 statement = statement.strip()
                 if statement:
                     execute(conn, statement)
+        LAST_DB_ERROR = None
         return
 
     with get_conn() as conn:
@@ -151,6 +154,19 @@ def init_db() -> None:
                 execute(conn, "ALTER TABLE diet_suggestions ADD COLUMN request_payload TEXT")
             except Exception:
                 pass
+    LAST_DB_ERROR = None
+
+
+def check_db() -> tuple[bool, str | None]:
+    global LAST_DB_ERROR
+    try:
+        with get_conn() as conn:
+            execute(conn, "SELECT 1").fetchone()
+        LAST_DB_ERROR = None
+        return True, None
+    except Exception as error:
+        LAST_DB_ERROR = f"{type(error).__name__}: {error}"
+        return False, LAST_DB_ERROR
 
 
 POSTGRES_SCHEMA = """

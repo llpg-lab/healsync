@@ -28,7 +28,9 @@ if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 from database import (
+    USE_POSTGRES,
     calendar_summary,
+    check_db,
     create_diet_record,
     create_suggestion,
     create_user,
@@ -75,7 +77,14 @@ app.add_middleware(
 UPLOAD_DIR = Path(BACKEND_DIR) / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-init_db()
+DATABASE_READY = True
+DATABASE_ERROR = None
+try:
+    init_db()
+except Exception as error:
+    DATABASE_READY = False
+    DATABASE_ERROR = f"{type(error).__name__}: {error}"
+    logging.getLogger(__name__).exception("Database initialization failed")
 
 from llm_client import LLMClient, get_llm_client, get_llm_api_key, get_llm_base_url, get_llm_model
 
@@ -177,11 +186,16 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    database_ready, database_error = check_db()
     return {
-        "status": "healthy",
+        "status": "healthy" if database_ready else "degraded",
         "llm_ready": bool(get_llm_api_key()),
         "llm_base_url": get_llm_base_url(),
         "llm_model": get_llm_model(),
+        "database_ready": database_ready,
+        "database_provider": "postgres" if USE_POSTGRES else "sqlite",
+        "database_init_ready": DATABASE_READY,
+        "database_error": database_error or DATABASE_ERROR,
     }
 
 @app.post("/auth/register")
