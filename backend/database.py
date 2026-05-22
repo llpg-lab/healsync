@@ -9,9 +9,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - optional in local SQLite mode
+    psycopg = None
+    dict_row = None
+
 
 BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("HEALSYNC_DB_PATH", BACKEND_DIR / "data" / "healsync.db"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
 
 
 def utc_now() -> str:
@@ -35,15 +44,35 @@ def from_json(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-def get_conn() -> sqlite3.Connection:
+def _convert_placeholders(sql: str) -> str:
+    return sql.replace("?", "%s") if USE_POSTGRES else sql
+
+
+def execute(conn: Any, sql: str, params: tuple[Any, ...] = ()):
+    return conn.execute(_convert_placeholders(sql), params)
+
+
+def get_conn() -> Any:
+    if USE_POSTGRES:
+        if psycopg is None:
+            raise RuntimeError("DATABASE_URL is set but psycopg is not installed")
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    execute(conn, "PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db() -> None:
+    if USE_POSTGRES:
+        with get_conn() as conn:
+            for statement in POSTGRES_SCHEMA.split(";"):
+                statement = statement.strip()
+                if statement:
+                    execute(conn, statement)
+        return
+
     with get_conn() as conn:
         conn.executescript(
             """
@@ -119,9 +148,82 @@ def init_db() -> None:
 
         with get_conn() as conn:
             try:
-                conn.execute("ALTER TABLE diet_suggestions ADD COLUMN request_payload TEXT")
+                execute(conn, "ALTER TABLE diet_suggestions ADD COLUMN request_payload TEXT")
             except Exception:
                 pass
+
+
+POSTGRES_SCHEMA = """
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    gender TEXT,
+    age TEXT,
+    height TEXT,
+    weight TEXT,
+    taste TEXT NOT NULL DEFAULT '[]',
+    allergies TEXT NOT NULL DEFAULT '[]',
+    conditions TEXT NOT NULL DEFAULT '[]',
+    fitness_goal TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diet_suggestions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ingredients TEXT,
+    mood TEXT,
+    note TEXT,
+    decision TEXT,
+    score INTEGER,
+    request_payload TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diet_records (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    food_identification TEXT NOT NULL DEFAULT '[]',
+    analysis TEXT NOT NULL DEFAULT '{}',
+    score INTEGER,
+    model_used TEXT,
+    image_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diet_record_images (
+    id TEXT PRIMARY KEY,
+    record_id TEXT NOT NULL REFERENCES diet_records(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    image_url TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_suggestions_user_created
+    ON diet_suggestions(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_records_user_created
+    ON diet_records(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_record_images_record
+    ON diet_record_images(record_id);
+"""
 
 
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -156,7 +258,7 @@ def profile_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def upsert_profile(conn: sqlite3.Connection, user_id: str, profile: dict[str, Any]) -> dict[str, Any]:
     now = utc_now()
-    conn.execute(
+    execute(conn, 
         """
         INSERT INTO profiles (
             user_id, gender, age, height, weight, taste, allergies, conditions, fitness_goal, created_at, updated_at
@@ -187,7 +289,7 @@ def upsert_profile(conn: sqlite3.Connection, user_id: str, profile: dict[str, An
             now,
         ),
     )
-    row = conn.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,)).fetchone()
+    row = execute(conn, "SELECT * FROM profiles WHERE user_id = ?", (user_id,)).fetchone()
     return profile_row_to_dict(row) or {}
 
 
@@ -197,42 +299,42 @@ def create_user(username: str, email: str, password: str, profile: dict[str, Any
     password_hash, salt = hash_password(password)
     token = secrets.token_urlsafe(32)
     with get_conn() as conn:
-        conn.execute(
+        execute(conn, 
             """
             INSERT INTO users (id, username, email, password_hash, password_salt, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (user_id, username, email, password_hash, salt, now, now),
         )
-        conn.execute(
+        execute(conn, 
             "INSERT INTO auth_sessions (token, user_id, created_at) VALUES (?, ?, ?)",
             (token, user_id, now),
         )
         saved_profile = upsert_profile(conn, user_id, profile or {})
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        user = execute(conn, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return {"token": token, "user": user_row_to_dict(user), "profile": saved_profile}
 
 
 def login_user(username_or_email: str, password: str) -> dict[str, Any] | None:
     with get_conn() as conn:
-        row = conn.execute(
+        row = execute(conn, 
             "SELECT * FROM users WHERE username = ? OR email = ?",
             (username_or_email, username_or_email),
         ).fetchone()
         if row is None or not verify_password(password, row["password_hash"], row["password_salt"]):
             return None
         token = secrets.token_urlsafe(32)
-        conn.execute(
+        execute(conn, 
             "INSERT INTO auth_sessions (token, user_id, created_at) VALUES (?, ?, ?)",
             (token, row["id"], utc_now()),
         )
-        profile = conn.execute("SELECT * FROM profiles WHERE user_id = ?", (row["id"],)).fetchone()
+        profile = execute(conn, "SELECT * FROM profiles WHERE user_id = ?", (row["id"],)).fetchone()
     return {"token": token, "user": user_row_to_dict(row), "profile": profile_row_to_dict(profile)}
 
 
 def get_session_user(token: str) -> dict[str, Any] | None:
     with get_conn() as conn:
-        row = conn.execute(
+        row = execute(conn, 
             """
             SELECT users.* FROM auth_sessions
             JOIN users ON users.id = auth_sessions.user_id
@@ -242,13 +344,13 @@ def get_session_user(token: str) -> dict[str, Any] | None:
         ).fetchone()
         if row is None:
             return None
-        profile = conn.execute("SELECT * FROM profiles WHERE user_id = ?", (row["id"],)).fetchone()
+        profile = execute(conn, "SELECT * FROM profiles WHERE user_id = ?", (row["id"],)).fetchone()
     return {"user": user_row_to_dict(row), "profile": profile_row_to_dict(profile)}
 
 
 def logout_token(token: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+        execute(conn, "DELETE FROM auth_sessions WHERE token = ?", (token,))
 
 
 def created_on_clause(date: str | None) -> tuple[str, tuple[Any, ...]]:
@@ -297,7 +399,7 @@ def create_suggestion(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     decision = payload.get("decision")
     request_payload = payload.get("requestPayload")
     with get_conn() as conn:
-        conn.execute(
+        execute(conn, 
             """
             INSERT INTO diet_suggestions (id, user_id, ingredients, mood, note, decision, score, request_payload, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -314,14 +416,14 @@ def create_suggestion(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 created_at,
             ),
         )
-        row = conn.execute("SELECT * FROM diet_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        row = execute(conn, "SELECT * FROM diet_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
     return suggestion_row_to_dict(row)
 
 
 def list_suggestions(user_id: str, date: str | None = None) -> list[dict[str, Any]]:
     clause, params = created_on_clause(date)
     with get_conn() as conn:
-        rows = conn.execute(
+        rows = execute(conn, 
             f"SELECT * FROM diet_suggestions WHERE user_id = ?{clause} ORDER BY created_at DESC",
             (user_id, *params),
         ).fetchall()
@@ -340,7 +442,7 @@ def create_diet_record(
     record_id = new_id()
     created_at = created_at or utc_now()
     with get_conn() as conn:
-        conn.execute(
+        execute(conn, 
             """
             INSERT INTO diet_records (
                 id, user_id, food_identification, analysis, score, model_used, image_count, created_at
@@ -359,27 +461,27 @@ def create_diet_record(
             ),
         )
         for image_url in image_urls:
-            conn.execute(
+            execute(conn, 
                 """
                 INSERT INTO diet_record_images (id, record_id, user_id, image_url, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (new_id(), record_id, user_id, image_url, created_at),
             )
-        row = conn.execute("SELECT * FROM diet_records WHERE id = ?", (record_id,)).fetchone()
+        row = execute(conn, "SELECT * FROM diet_records WHERE id = ?", (record_id,)).fetchone()
     return record_row_to_dict(row, image_urls)
 
 
 def list_diet_records(user_id: str, date: str | None = None) -> list[dict[str, Any]]:
     clause, params = created_on_clause(date)
     with get_conn() as conn:
-        rows = conn.execute(
+        rows = execute(conn, 
             f"SELECT * FROM diet_records WHERE user_id = ?{clause} ORDER BY created_at DESC",
             (user_id, *params),
         ).fetchall()
         result = []
         for row in rows:
-            images = conn.execute(
+            images = execute(conn, 
                 "SELECT image_url FROM diet_record_images WHERE record_id = ? ORDER BY created_at ASC",
                 (row["id"],),
             ).fetchall()
@@ -389,7 +491,7 @@ def list_diet_records(user_id: str, date: str | None = None) -> list[dict[str, A
 
 def calendar_summary(user_id: str) -> dict[str, Any]:
     with get_conn() as conn:
-        diet_rows = conn.execute(
+        diet_rows = execute(conn, 
             """
             SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS record_count, AVG(score) AS avg_score
             FROM diet_records
@@ -398,7 +500,7 @@ def calendar_summary(user_id: str) -> dict[str, Any]:
             """,
             (user_id,),
         ).fetchall()
-        suggestion_rows = conn.execute(
+        suggestion_rows = execute(conn, 
             """
             SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS suggestion_count
             FROM diet_suggestions

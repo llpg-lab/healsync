@@ -42,6 +42,7 @@ from database import (
     upsert_profile,
     utc_now,
 )
+from storage import upload_image_to_supabase
 
 load_dotenv(os.path.join(BACKEND_DIR, '.env'))
 
@@ -440,13 +441,23 @@ async def analyze_diet_with_vision(
         if not content:
             raise HTTPException(status_code=400, detail=f"{img.filename} 是空文件")
         suffix = Path(img.filename or "").suffix.lower() or ".jpg"
-        safe_user_id = user_id.replace("/", "_")
-        upload_folder = UPLOAD_DIR / safe_user_id / request_id
-        upload_folder.mkdir(parents=True, exist_ok=True)
         image_name = f"{len(images_data) + 1}{suffix}"
-        image_path = upload_folder / image_name
-        image_path.write_bytes(content)
-        image_urls.append(f"/uploads/{safe_user_id}/{request_id}/{image_name}")
+        storage_url = upload_image_to_supabase(
+            user_id=user_id,
+            request_id=request_id,
+            filename=image_name,
+            content=content,
+            content_type=content_type,
+        )
+        if storage_url:
+            image_urls.append(storage_url)
+        else:
+            safe_user_id = user_id.replace("/", "_")
+            upload_folder = UPLOAD_DIR / safe_user_id / request_id
+            upload_folder.mkdir(parents=True, exist_ok=True)
+            image_path = upload_folder / image_name
+            image_path.write_bytes(content)
+            image_urls.append(f"/uploads/{safe_user_id}/{request_id}/{image_name}")
         images_data.append({
             "filename": img.filename or "image",
             "content_type": content_type,

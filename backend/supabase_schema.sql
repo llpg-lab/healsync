@@ -1,75 +1,75 @@
--- Supabase/Postgres schema matching the local SQLite development database.
--- Run this in the Supabase SQL editor when moving from local development.
+-- HealSync production schema for Supabase Postgres.
+-- This keeps the app's current custom username/password login system.
+-- Run this in the Supabase SQL Editor before deploying the backend.
 
 create extension if not exists "pgcrypto";
 
+create table if not exists public.users (
+  id text primary key,
+  username text not null unique,
+  email text not null unique,
+  password_hash text not null,
+  password_salt text not null,
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists public.auth_sessions (
+  token text primary key,
+  user_id text not null references public.users(id) on delete cascade,
+  created_at text not null
+);
+
 create table if not exists public.profiles (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  username text unique,
+  user_id text primary key references public.users(id) on delete cascade,
   gender text,
   age text,
   height text,
   weight text,
-  taste jsonb not null default '[]'::jsonb,
-  allergies jsonb not null default '[]'::jsonb,
-  conditions jsonb not null default '[]'::jsonb,
+  taste text not null default '[]',
+  allergies text not null default '[]',
+  conditions text not null default '[]',
   fitness_goal text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  created_at text not null,
+  updated_at text not null
 );
 
 create table if not exists public.diet_suggestions (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  id text primary key,
+  user_id text not null references public.users(id) on delete cascade,
   ingredients text,
   mood text,
   note text,
-  decision jsonb,
+  decision text,
   score integer check (score is null or score between 0 and 100),
-  created_at timestamptz not null default now()
+  request_payload text,
+  created_at text not null
 );
 
 create table if not exists public.diet_records (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  food_identification jsonb not null default '[]'::jsonb,
-  analysis jsonb not null default '{}'::jsonb,
+  id text primary key,
+  user_id text not null references public.users(id) on delete cascade,
+  food_identification text not null default '[]',
+  analysis text not null default '{}',
   score integer check (score is null or score between 0 and 100),
   model_used text,
   image_count integer not null default 0,
-  created_at timestamptz not null default now()
+  created_at text not null
 );
 
 create table if not exists public.diet_record_images (
-  id uuid primary key default gen_random_uuid(),
-  record_id uuid not null references public.diet_records(id) on delete cascade,
-  user_id uuid not null references auth.users(id) on delete cascade,
+  id text primary key,
+  record_id text not null references public.diet_records(id) on delete cascade,
+  user_id text not null references public.users(id) on delete cascade,
   image_url text not null,
-  created_at timestamptz not null default now()
+  created_at text not null
 );
 
-create index if not exists idx_diet_suggestions_user_created
-  on public.diet_suggestions(user_id, created_at desc);
+create index if not exists idx_suggestions_user_created
+  on public.diet_suggestions(user_id, created_at);
 
-create index if not exists idx_diet_records_user_created
-  on public.diet_records(user_id, created_at desc);
+create index if not exists idx_records_user_created
+  on public.diet_records(user_id, created_at);
 
-create index if not exists idx_diet_record_images_record
+create index if not exists idx_record_images_record
   on public.diet_record_images(record_id);
-
-alter table public.profiles enable row level security;
-alter table public.diet_suggestions enable row level security;
-alter table public.diet_records enable row level security;
-alter table public.diet_record_images enable row level security;
-
-create policy "profiles own rows" on public.profiles
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "diet_suggestions own rows" on public.diet_suggestions
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "diet_records own rows" on public.diet_records
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "diet_record_images own rows" on public.diet_record_images
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
