@@ -46,8 +46,9 @@ from database import (
 load_dotenv(os.path.join(BACKEND_DIR, '.env'))
 
 print(f"[DEBUG] Loading .env from: {os.path.join(BACKEND_DIR, '.env')}")
-print(f"[DEBUG] MODELSCOPE_API_KEY: {os.getenv('MODELSCOPE_API_KEY', 'NOT FOUND')[:20]}...")
-print(f"[DEBUG] MODELSCOPE_MODEL: {os.getenv('MODELSCOPE_MODEL', 'NOT FOUND')}")
+print(f"[DEBUG] LLM_API_KEY: {(os.getenv('LLM_API_KEY') or os.getenv('MODELSCOPE_API_KEY', 'NOT FOUND'))[:8]}...")
+print(f"[DEBUG] LLM_BASE_URL: {os.getenv('LLM_BASE_URL') or os.getenv('MODELSCOPE_BASE_URL', 'NOT FOUND')}")
+print(f"[DEBUG] LLM_MODEL: {os.getenv('LLM_MODEL') or os.getenv('MODELSCOPE_MODEL', 'NOT FOUND')}")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,9 +76,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 init_db()
 
-MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", "")
-MODELSCOPE_BASE_URL = os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1")
-MODELSCOPE_MODEL = os.getenv("MODELSCOPE_MODEL", "moonshotai/Kimi-K2.5")
+from llm_client import LLMClient, get_llm_client, get_llm_api_key, get_llm_base_url, get_llm_model
+
+LLM_API_KEY = get_llm_api_key()
+LLM_BASE_URL = get_llm_base_url()
+LLM_MODEL = get_llm_model()
 
 class DecisionRequest(BaseModel):
     user_input: str
@@ -134,7 +137,6 @@ class DecisionResponse(BaseModel):
     final_decision: FinalDecisionOutput
     wellness_score: int
 
-from llm_client import LLMClient, get_llm_client
 from engine import DecisionEngine
 
 engine = DecisionEngine()
@@ -168,13 +170,18 @@ async def root():
         "service": "HealSync Multi-Agent Backend",
         "version": "3.0.0",
         "message": "Two-Round Debate System is ready!",
-        "llm_configured": bool(MODELSCOPE_API_KEY),
+        "llm_configured": bool(get_llm_api_key()),
         "agents": ["老中医", "营养师", "情绪疗愈师", "快乐分身", "自律分身", "老己"]
     }
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "llm_ready": bool(MODELSCOPE_API_KEY)}
+    return {
+        "status": "healthy",
+        "llm_ready": bool(get_llm_api_key()),
+        "llm_base_url": get_llm_base_url(),
+        "llm_model": get_llm_model(),
+    }
 
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
@@ -464,7 +471,7 @@ async def analyze_diet_with_vision(
     try:
         client = test_llm_client._get_client()
         if client is None:
-            raise HTTPException(status_code=503, detail="模型客户端不可用，请检查 MODELSCOPE_API_KEY 和 openai 依赖")
+            raise HTTPException(status_code=503, detail="模型客户端不可用，请检查 LLM_API_KEY、LLM_BASE_URL 和 openai 依赖")
 
         content = [{"type": "text", "text": prompt}]
         for index, img in enumerate(images_data, start=1):
@@ -477,7 +484,7 @@ async def analyze_diet_with_vision(
             })
 
         response = client.chat.completions.create(
-            model=os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": "你是专业营养师和中医师。你必须基于用户上传的图片进行饮食分析，并始终输出合法 JSON。"},
                 {"role": "user", "content": content},
@@ -522,7 +529,7 @@ async def analyze_diet_with_vision(
             "user_id": user_id,
             "timestamp": datetime.now().isoformat(),
             "image_count": len(images_data),
-            "model_used": os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
+            "model_used": get_llm_model(),
         }
 
         if auth_user:
@@ -598,7 +605,7 @@ async def analyze_diet(
         ]
         
         response = client.chat.completions.create(
-            model=os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B"),
+            model=get_llm_model(),
             messages=messages,
             max_tokens=1000,
             temperature=0.7
@@ -698,8 +705,8 @@ async def get_diet_records(user_id: str):
 
 @app.get("/test-llm")
 async def test_llm():
-    if not MODELSCOPE_API_KEY:
-        return {"status": "error", "message": "MODELSCOPE_API_KEY not configured"}
+    if not get_llm_api_key():
+        return {"status": "error", "message": "LLM_API_KEY not configured"}
     
     response = await test_llm_client.call(
         system_prompt="你是一个友好的AI助手。",

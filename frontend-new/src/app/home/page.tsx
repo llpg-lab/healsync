@@ -383,6 +383,8 @@ export default function HomePage() {
       .join(' / ')
   }, [userProfile])
 
+  const hasDietRecords = dietScores.length > 0
+
   const averageDietScore = useMemo(() => {
     const recentScores = dietScores.slice(0, 7).map((record) => record.score)
     if (recentScores.length === 0) return dietResult?.score ?? 76
@@ -465,7 +467,36 @@ export default function HomePage() {
     }
   }
 
-  const runDecisionStream = async (records = suggestions, overrideUserInput?: string, cookingRequest?: CookingRequest) => {
+  const saveSuggestionWithDecision = async (
+    baseRecord: SuggestionRecord,
+    decisionData: DecisionResponse,
+  ) => {
+    const recordWithDecision: SuggestionRecord = {
+      ...baseRecord,
+      decision: decisionData,
+      score: decisionData.wellness_score,
+    }
+
+    try {
+      const saved = await apiFetch<SuggestionRecord>('/diet/suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recordWithDecision),
+      })
+      setSuggestions((current) => [saved, ...current])
+      void refreshCalendar().catch(() => undefined)
+    } catch (error) {
+      setSuggestions((current) => [recordWithDecision, ...current])
+      setNotice(error instanceof Error ? `饮食建议保存失败：${error.message}` : '饮食建议保存失败')
+    }
+  }
+
+  const runDecisionStream = async (
+    records = suggestions,
+    overrideUserInput?: string,
+    cookingRequest?: CookingRequest,
+    sourceSuggestion?: SuggestionRecord,
+  ) => {
     const currentContext = overrideUserInput || records
       .map((item, index) => `${index + 1}. 食材：${item.ingredients || '未填写'}；情绪：${item.mood}；备注：${item.note}`)
       .join('\n')
@@ -513,7 +544,7 @@ export default function HomePage() {
       const reader = response.body.getReader()
       let buffer = ''
 
-      const handleStreamEvent = (event: AgentStreamEvent) => {
+      const handleStreamEvent = async (event: AgentStreamEvent) => {
         if (event.type === 'agent_complete') {
           streamedAgents.push(event)
           setAgentEvents((current) => [...current, event])
@@ -568,6 +599,9 @@ export default function HomePage() {
             summary: data.final_decision.dinner_recommendation,
             createdAt: new Date().toLocaleString('zh-CN'),
           })
+          if (sourceSuggestion) {
+            await saveSuggestionWithDecision(sourceSuggestion, data)
+          }
         }
 
         if (event.type === 'error') {
@@ -592,7 +626,7 @@ export default function HomePage() {
           if (!dataLine) continue
           const event = JSON.parse(dataLine) as AgentStreamEvent
           if (event.type === 'done') continue
-          handleStreamEvent(event)
+          await handleStreamEvent(event)
         }
       }
     } catch (error) {
@@ -627,23 +661,8 @@ export default function HomePage() {
       requestPayload: { ...cr },
     }
 
-    const next = [record, ...suggestions]
-    setSuggestions(next)
     setDraftSuggestion(emptySuggestion)
     setDraftCookingRequest(emptyCookingRequest)
-
-    apiFetch<SuggestionRecord>('/diet/suggestions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(record),
-    })
-      .then((saved) => {
-        setSuggestions((current) => current.map((item) => (item.id === record.id ? saved : item)))
-        void refreshCalendar().catch(() => undefined)
-      })
-      .catch((error) => {
-        setNotice(error instanceof Error ? `饮食建议保存失败：${error.message}` : '饮食建议保存失败')
-      })
 
     const user_input = [
       `做饭目标：${cr.goal}`,
@@ -655,7 +674,7 @@ export default function HomePage() {
       cr.tools.length > 0 ? `厨具：${cr.tools.join('、')}` : '',
     ].filter(Boolean).join('\n')
 
-    void runDecisionStream(next, user_input, cr)
+    void runDecisionStream(suggestions, user_input, cr, record)
   }
 
   const analyzeDiet = async (files: FileList | File[] | null, imageUrls: string[] = []) => {
@@ -766,7 +785,7 @@ export default function HomePage() {
             </div>
           )}
 
-          <StateMachine score={averageDietScore} bucket={stateBucket} />
+          <StateMachine score={averageDietScore} bucket={stateBucket} hasDietRecords={hasDietRecords} />
         </section>
 
         <RightWorkbench
@@ -934,8 +953,8 @@ function TopBar({ user, profileSummary }: { user: User | null; profileSummary: s
   )
 }
 
-function StateMachine({ score, bucket }: { score: number; bucket: number }) {
-  const videoSrc = `/video/${bucket}.mp4`
+function StateMachine({ score, bucket, hasDietRecords }: { score: number; bucket: number; hasDietRecords: boolean }) {
+  const videoSrc = hasDietRecords ? `/video/${bucket}.mp4` : '/video/eating.mp4'
 
   return (
     <section className="relative min-h-[420px] flex-1 overflow-hidden rounded-[1.25rem] bg-[#d6cebc] shadow-sm lg:min-h-0">
@@ -951,8 +970,10 @@ function StateMachine({ score, bucket }: { score: number; bucket: number }) {
       <div className="absolute inset-0 bg-[#d6cebc]/20" />
       <div className="absolute bottom-5 right-5 flex h-24 w-24 items-center justify-center rounded-full bg-white/90 text-center shadow-xl backdrop-blur">
         <div>
-          <div className="text-3xl font-black leading-none">{score}</div>
-          <div className="mt-1 text-[11px] font-semibold text-gray-500">饮食均分</div>
+          <div className={hasDietRecords ? 'text-3xl font-black leading-none' : 'text-sm font-bold leading-tight text-gray-700'}>
+            {hasDietRecords ? score : '\u672a\u8bc4\u5206'}
+          </div>
+          {hasDietRecords && <div className="mt-1 text-[11px] font-semibold text-gray-500">饮食均分</div>}
         </div>
       </div>
     </section>
@@ -1550,8 +1571,23 @@ function CookingRequestForm({
   )
 }
 
+function getSuggestionMenuTitle(record: SuggestionRecord) {
+  return (
+    record.decision?.final_decision?.recommended_menu?.title ||
+    record.decision?.final_decision?.dinner_recommendation ||
+    record.requestPayload?.goal ||
+    record.ingredients ||
+    '\u63a8\u8350\u83dc\u8c31'
+  )
+}
+
+function getSuggestionMenuSummary(record: SuggestionRecord) {
+  const dishes = record.decision?.final_decision?.recommended_menu?.dishes || []
+  if (dishes.length > 0) return dishes.map((dish) => dish.name).join(' / ')
+  return record.decision?.final_decision?.dinner_recommendation || '\u7b49\u5f85\u751f\u6210\u5b8c\u6574\u63a8\u8350'
+}
+
 function SuggestionRecordCard({ record, onClick }: { record: SuggestionRecord; onClick?: () => void }) {
-  const menu = record.decision?.final_decision?.recommended_menu
   return (
     <button
       type="button"
@@ -1560,16 +1596,14 @@ function SuggestionRecordCard({ record, onClick }: { record: SuggestionRecord; o
     >
       <div className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-bold">{menu?.title || record.requestPayload?.goal || record.ingredients || '未填写食材'}</h3>
-          <p className="mt-1 text-xs text-gray-500">{record.mood}{record.requestPayload?.timeBudget ? ` · ${record.requestPayload.timeBudget}` : ''}</p>
+          <h3 className="line-clamp-1 text-sm font-bold">{getSuggestionMenuTitle(record)}</h3>
         </div>
         {record.createdAt && <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs text-gray-500">{record.createdAt}</span>}
       </div>
-      <p className="text-sm leading-6 text-gray-600">{menu ? menu.dishes.map((d) => d.name).join('、') : record.note || '未补充短期状态'}</p>
+      <p className="line-clamp-2 text-sm leading-6 text-gray-600">{getSuggestionMenuSummary(record)}</p>
     </button>
   )
 }
-
 function MiniCalendar({
   scores,
   days,
@@ -1700,10 +1734,10 @@ function CalendarDayDetailModal({
                     className="w-full rounded-2xl bg-cream p-4 text-left transition hover:bg-morandi-yellow/25"
                   >
                     <div className="mb-2 flex items-center justify-between gap-3">
-                      <span className="text-sm font-bold">{record.ingredients || '未填写食材'}</span>
-                      <span className="rounded-full bg-white px-3 py-1 text-xs text-gray-500">{record.mood || '未填写'}</span>
+                      <span className="line-clamp-1 text-sm font-bold">{getSuggestionMenuTitle(record)}</span>
+                      {record.createdAt && <span className="rounded-full bg-white px-3 py-1 text-xs text-gray-500">{record.createdAt}</span>}
                     </div>
-                    <p className="line-clamp-2 text-xs leading-5 text-gray-600">{record.note || '未补充短期状态'}</p>
+                    <p className="line-clamp-2 text-xs leading-5 text-gray-600">{getSuggestionMenuSummary(record)}</p>
                   </button>
                 ))
               ) : (

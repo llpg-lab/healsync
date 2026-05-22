@@ -5,8 +5,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+def get_llm_api_key() -> str:
+    return os.getenv("LLM_API_KEY") or os.getenv("MODELSCOPE_API_KEY", "")
+
+def get_llm_base_url() -> str:
+    return os.getenv("LLM_BASE_URL") or os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1")
+
+def get_llm_model() -> str:
+    return os.getenv("LLM_MODEL") or os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B")
+
 def get_api_key(agent_name: str) -> str:
-    return os.getenv("MODELSCOPE_API_KEY", "")
+    return get_llm_api_key()
 
 MOCK_RESPONSES = {
     "老中医": "老夫观你之症，似有脾胃不和之象。此时宜食清淡温热之物，忌辛辣生冷。建议以粥养胃，佐以山药、红枣，可助脾胃运化。切记，子时不睡伤肝胆，宜早休息。",
@@ -19,10 +28,10 @@ MOCK_RESPONSES = {
 
 class LLMClient:
     def __init__(self, api_key: str = None, agent_name: str = None):
-        self.api_key = api_key
+        self.api_key = api_key or get_llm_api_key()
         self.agent_name = agent_name or "Unknown"
-        self.base_url = os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1")
-        self.model = os.getenv("MODELSCOPE_MODEL", "Qwen/Qwen3.5-397B-A17B")
+        self.base_url = get_llm_base_url()
+        self.model = get_llm_model()
         self._client = None
     
     def _get_client(self):
@@ -60,7 +69,7 @@ class LLMClient:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    max_tokens=500,
+                    max_tokens=2000,
                     temperature=0.7
                 )
                 return response.choices[0].message.content
@@ -72,11 +81,16 @@ class LLMClient:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"❌ [{self.agent_name}] LLM Error: {error_msg}")
-            
+
             if "429" in error_msg or "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
-                logger.warning(f"[{self.agent_name}] API rate limit exceeded, using mock response")
-            else:
-                logger.warning(f"[{self.agent_name}] API call failed, using mock response")
+                logger.warning(f"[{self.agent_name}] API rate limit exceeded, retrying after delay...")
+                await asyncio.sleep(2)
+                try:
+                    result = await loop.run_in_executor(None, sync_call)
+                    logger.info(f"🤖 [{self.agent_name}] LLM Retry Response: {result[:100]}...")
+                    return result
+                except Exception as retry_err:
+                    logger.error(f"❌ [{self.agent_name}] LLM Retry also failed: {retry_err}")
             return self._get_mock_response()
     
     def _get_mock_response(self) -> str:
@@ -87,5 +101,9 @@ class LLMClient:
 
 def get_llm_client(agent_name: str) -> LLMClient:
     api_key = get_api_key(agent_name)
-    logger.info(f"Creating LLM client for [{agent_name}] with API key: {api_key[:20] if api_key else 'None'}...")
+    logger.info(
+        f"Creating LLM client for [{agent_name}] with "
+        f"base_url={get_llm_base_url()}, model={get_llm_model()}, "
+        f"api_key={api_key[:8] + '...' if api_key else 'None'}"
+    )
     return LLMClient(api_key=api_key, agent_name=agent_name)

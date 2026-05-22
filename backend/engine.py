@@ -114,7 +114,7 @@ class DecisionEngine:
             if search_query:
                 search_results_text = await self._do_search(search_query)
         
-        prompt = agent.get_debate_prompt(user_input, round1_logs, search_results_text)
+        prompt = self._build_round2_prompt(agent, user_input, round1_logs, search_results_text)
         
         agent.log_thinking("调用 LLM 生成辩论回应...")
         llm_client = self._get_llm_client(agent.name)
@@ -156,8 +156,70 @@ class DecisionEngine:
             prompt_parts.append(f"\n📚 搜索资料：\n{search_results}")
         
         prompt_parts.append("\n请根据你的角色定位，给出你的第一轮独立意见。")
+        prompt_parts.append("""
+
+【第一轮硬性输出要求】
+这一轮的核心任务不是泛泛健康建议，而是：基于用户长期状态和本次短期状态，输出一个完整、可执行的菜谱推荐。
+
+请必须按下面结构回答：
+1. 菜谱名称：给这套餐起一个清晰名称。
+2. 菜品清单：列出具体菜品，至少 1 道，若用户目标包含几菜几汤或多人用餐，请尽量匹配。
+3. 每道菜简要做法：每道菜给 2-4 个关键步骤。
+4. 推荐理由：说明为什么这套菜适合用户当前目标、现有食材、心情、时间预算和长期状态。
+5. 时间可行性：估算能否在用户留给做饭的时间内完成。
+6. 注意事项：从你的角色角度指出风险、替代方案或需要控制的点。
+
+请体现你的角色视角：
+- 老中医：重点看寒热温凉、脾胃、体质和食材性味。
+- 营养师：重点看蛋白质、碳水、蔬菜、油盐、热量结构。
+- 情绪疗愈师：重点看情绪安慰、满足感和不过度放纵。
+- 快乐分身：重点看好吃、口味满足和仪式感。
+- 自律分身：重点看省时、少油少盐、步骤简单和可执行。
+
+不要只说“建议清淡饮食”或“注意营养均衡”，必须给出具体菜名和做法。
+""")
         
         return "\n".join(prompt_parts)
+
+    def _build_round2_prompt(
+        self,
+        agent: BaseAgent,
+        user_input: str,
+        round1_logs: List[DebateLog],
+        search_results: str = None
+    ) -> str:
+        other_opinions = []
+        own_opinion = ""
+        for log in round1_logs:
+            if log.agent_name == agent.name:
+                own_opinion = log.opinion
+            else:
+                other_opinions.append(f"【{log.agent_name}】{log.opinion}")
+
+        prompt = f"""用户本次做饭需求：
+{user_input}
+
+你第一轮的建议：
+{own_opinion or "无"}
+
+其他 Agent 第一轮建议：
+{chr(10).join(other_opinions)}
+
+【第二轮任务】
+现在进入自由辩论。请阅读其他 Agent 的菜谱建议后，自由表达你的支持、反对、补充或修正。
+
+要求：
+1. 不需要重新完整结构化输出菜谱。
+2. 可以指出其他方案的优点、问题、冲突或不可执行之处。
+3. 如果你被说服，可以修正自己第一轮的建议。
+4. 最终目的是帮助老己整合出一套更好吃、更健康、更可执行的最终菜单。
+5. 回答尽量精炼，重点放在你最想坚持或修正的 1-3 个点。
+"""
+
+        if search_results:
+            prompt += f"\n\n📚 搜索资料：\n{search_results}"
+
+        return prompt
     
     async def run_parallel_round1(
         self,
@@ -319,8 +381,8 @@ class DecisionEngine:
         logger.info("=" * 60)
         
         tasks = [
-            run_agent_with_notify(agent, 1, user_input, context, delay=i * 3)
-            for i, agent in enumerate(self.agents)
+            run_agent_with_notify(agent, 1, user_input, context)
+            for agent in self.agents
         ]
 
         round1_logs = []
@@ -340,8 +402,8 @@ class DecisionEngine:
         logger.info("=" * 60)
 
         tasks = [
-            run_agent_with_notify(agent, 2, user_input, context, round1_logs, delay=i * 3)
-            for i, agent in enumerate(self.agents)
+            run_agent_with_notify(agent, 2, user_input, context, round1_logs)
+            for agent in self.agents
         ]
         
         round2_logs = []

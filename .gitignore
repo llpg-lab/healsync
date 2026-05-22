@@ -21,3 +21,12 @@ backend/uploads/
 .env
 .env.*
 !.env.example
+
+# Local-only assets, docs, and launch scripts
+/image/
+/video/
+/docs/
+/README-local.md
+/README.md
+/start-local.bat
+/start-local.ps1
