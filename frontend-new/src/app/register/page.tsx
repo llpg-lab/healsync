@@ -41,6 +41,7 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [profile, setProfile] = useState<UserProfile>(emptyProfile)
 
   const totalSteps = onboardingSteps.length + 1
@@ -78,6 +79,11 @@ export default function RegisterPage() {
   }
 
   const finishRegister = async () => {
+    if (isSubmitting) return
+
+    setIsSubmitting(true)
+    setError('')
+
     try {
       const session = await apiFetch<{
         token: string
@@ -99,13 +105,17 @@ export default function RegisterPage() {
       localStorage.setItem('healsync_profile', JSON.stringify(session.profile))
       setUser(session.user)
       setUserProfile(session.profile)
-      router.push('/home')
+      router.replace('/home')
     } catch (error) {
       setError(error instanceof Error ? error.message : '注册失败')
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
   const handleNext = () => {
+    if (isSubmitting) return
+
     if (step < totalSteps - 1) {
       setStep(step + 1)
       return
@@ -321,6 +331,8 @@ export default function RegisterPage() {
                   ))}
                 </div>
               )}
+
+              {error && <p className="mt-4 text-center text-sm text-red-500">{error}</p>}
 
               <PrimaryButton onClick={handleNext} className="mt-6">
                 {profileStep === onboardingSteps.length - 1 ? '完成并进入应用' : '下一步'}
