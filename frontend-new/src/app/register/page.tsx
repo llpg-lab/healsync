@@ -160,7 +160,7 @@ export default function RegisterPage() {
               <div className="w-20 h-20 mx-auto mb-4 rounded-5xl bg-gradient-to-br from-morandi-pink to-morandi-purple flex items-center justify-center shadow-xl">
                 <Utensils className="w-10 h-10 text-white" />
               </div>
-              <h1 className="text-3xl font-bold text-gray-800">创建本地账号</h1>
+              <h1 className="text-3xl font-bold text-gray-800">创建账号</h1>
             </div>
 
             <div className="glass rounded-5xl p-8">

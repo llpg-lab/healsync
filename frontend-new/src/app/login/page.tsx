@@ -67,7 +67,7 @@ export default function LoginPage() {
             <Utensils className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-gray-800">欢迎回来</h1>
-          <p className="text-gray-500 mt-2">登录本地 HealSync 账号</p>
+          <p className="text-gray-500 mt-2">登录 HealSync 账号</p>
         </div>
 
         <div className="glass rounded-5xl p-8">
@@ -119,7 +119,7 @@ export default function LoginPage() {
           <div className="mt-6 text-center">
             <span className="text-gray-500">还没有账号？</span>
             <Link href="/register" className="text-morandi-purple font-medium ml-1 hover:underline">
-              创建本地账号
+              创建账号
             </Link>
           </div>
         </div>
