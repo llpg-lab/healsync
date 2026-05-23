@@ -164,7 +164,7 @@ type SelectedDietPhoto = {
 }
 
 type AgentStreamEvent = {
-  type: 'agent_complete' | 'final_decision' | 'error' | 'done'
+  type: 'agent_complete' | 'final_decision' | 'error' | 'done' | 'ping'
   agent_name?: string
   role?: string
   opinion?: string
@@ -625,7 +625,7 @@ export default function HomePage() {
 
           if (!dataLine) continue
           const event = JSON.parse(dataLine) as AgentStreamEvent
-          if (event.type === 'done') continue
+          if (event.type === 'done' || event.type === 'ping') continue
           await handleStreamEvent(event)
         }
       }

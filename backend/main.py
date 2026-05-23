@@ -386,7 +386,11 @@ async def generate_decision_stream(request: DecisionRequest):
     
     try:
         while True:
-            event = await event_queue.get()
+            try:
+                event = await asyncio.wait_for(event_queue.get(), timeout=10)
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                continue
             
             if event.get("type") == "done":
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -422,6 +426,7 @@ async def make_decision_stream(request: DecisionRequest):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
             "Access-Control-Allow-Origin": "*",
         }
     )
