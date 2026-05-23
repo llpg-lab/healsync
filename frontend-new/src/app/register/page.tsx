@@ -9,7 +9,7 @@ import { useAppStore, type UserProfile } from '@/store/useAppStore'
 import { apiFetch } from '@/lib/api'
 
 const onboardingSteps = [
-  { title: '基础信息', subtitle: '这些信息只会保存在你的浏览器本地' },
+  { title: '基础信息'},
   { title: '饮食偏好', subtitle: '帮助应用给出更贴近你的建议' },
   { title: '健康情况', subtitle: '记录过敏、忌口和当前状态' },
   { title: '目标设置', subtitle: '选择你现阶段最想关注的方向' },
@@ -161,7 +161,6 @@ export default function RegisterPage() {
                 <Utensils className="w-10 h-10 text-white" />
               </div>
               <h1 className="text-3xl font-bold text-gray-800">创建本地账号</h1>
-              <p className="text-gray-500 mt-2">账号和资料只存放在当前浏览器</p>
             </div>
 
             <div className="glass rounded-5xl p-8">
